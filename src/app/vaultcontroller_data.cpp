@@ -62,8 +62,12 @@ QVariantList VaultController::contacts() const
         return QString::localeAwareCompare(a.name, b.name) < 0;
     });
     QVariantList out;
-    for (const auto &c : sorted)
-        out << contactToMap(c, data().contactUsage(c.id));
+    for (const auto &c : sorted) {
+        QVariantMap m = contactToMap(c, data().contactUsage(c.id));
+        m[QStringLiteral("source")] = sourceKeyOf(c.id);
+        m[QStringLiteral("sourceName")] = sourceName(sourceKeyOf(c.id));
+        out << m;
+    }
     return out;
 }
 
@@ -80,7 +84,7 @@ QVariantMap VaultController::entryType(const QString &key) const
 
 // --- Oppføringer ---
 
-QVariantMap VaultController::newEntry(int templateIndex) const
+QVariantMap VaultController::newEntry(int templateIndex, const QString &sourceKey) const
 {
     Entry e = Entry::createNew();
     const QJsonArray all = entrytypes::templates();
@@ -97,7 +101,11 @@ QVariantMap VaultController::newEntry(int templateIndex) const
         for (const auto &tag : p[QStringLiteral("tags")].toArray())
             e.tags << tag.toString();
     }
-    return e.toJson().toVariantMap();
+    QVariantMap m = e.toJson().toVariantMap();
+    const QString key = sourceKey.isEmpty() ? MainKey : sourceKey;
+    m[QStringLiteral("source")] = key;
+    m[QStringLiteral("sourceName")] = sourceName(key);
+    return m;
 }
 
 QVariantMap VaultController::entry(const QString &id) const
@@ -115,6 +123,8 @@ QVariantMap VaultController::entry(const QString &id) const
             contacts << contactToMap(*c, data().contactUsage(c->id));
     m[QStringLiteral("contacts")] = contacts;
     m[QStringLiteral("typeLabel")] = entrytypes::type(e->type)[QStringLiteral("label")].toString();
+    m[QStringLiteral("source")] = sourceKeyOf(e->id);
+    m[QStringLiteral("sourceName")] = sourceName(sourceKeyOf(e->id));
     return m;
 }
 
@@ -152,7 +162,17 @@ QString VaultController::saveEntry(const QVariantMap &map)
     e.customFields.removeIf([](const CustomField &f) { return f.name.trimmed().isEmpty() && f.value.isEmpty(); });
     for (auto &f : e.customFields)
         f.name = f.name.trimmed();
-    e.contactIds.removeIf([this](const QString &cid) { return !data().contact(cid); });
+    // Ny oppføring i en tilleggsdatabase: id-en får databasens prefiks.
+    const QString requested = map.value(QStringLiteral("source")).toString();
+    if (!e.id.contains(QLatin1Char(':')) && !requested.isEmpty() && requested != MainKey)
+        e.id = qualify(requested, e.id);
+    const QString key = sourceKeyOf(e.id);
+    const Source *target = source(key);
+    if (!target || !target->store) {
+        setError(QStringLiteral("Databasen oppføringen skal lagres i, er ikke åpen."));
+        return {};
+    }
+    e.contactIds.removeIf([this, &key](const QString &cid) { return !data().contact(cid) || sourceKeyOf(cid) != key; });
     e.contactIds.removeDuplicates();
 
     const QDateTime now = QDateTime::currentDateTimeUtc();
@@ -210,9 +230,14 @@ QString VaultController::saveContact(const QVariantMap &map)
         return {};
     QVariantMap clean = map;
     clean.remove(QStringLiteral("usage"));
+    clean.remove(QStringLiteral("source"));
+    clean.remove(QStringLiteral("sourceName"));
     Contact c = Contact::fromJson(QJsonObject::fromVariantMap(clean));
     c.name = c.name.trimmed();
     c.email = c.email.trimmed();
+    const QString requested = map.value(QStringLiteral("source")).toString();
+    if (!c.id.contains(QLatin1Char(':')) && !requested.isEmpty() && requested != MainKey)
+        c.id = qualify(requested, c.id);
     if (c.name.isEmpty() && c.email.isEmpty()) {
         setError(QStringLiteral("Kontakten må ha navn eller e-post."));
         return {};

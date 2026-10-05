@@ -12,6 +12,11 @@ SQL Server. Felles database for hele teamet kommer senere i fase 2 ([plan](docs/
 - **Lagring:** kryptert `.hvelv`-fil, eller en database i SQL Server (Windows-pålogging). I SQL Server
   ligger metadata (tittel, kunde, system, miljø, utløp) lesbart for rapporter i SSMS, mens alle
   hemmeligheter krypteres i appen. Et filhvelv kan kopieres til SQL Server fra «Eksporter».
+- **Flere databaser samtidig:** i tillegg til den personlige databasen kan du legge til andre
+  (fil eller SQL Server) under «Databaser…». Passordene lagres kryptert i den personlige databasen,
+  så alt låses opp med ett hovedpassord. Søk, hurtigsøk, Auto-Type, påminnelser og passordhelse
+  virker på tvers; listen kan filtreres på database, og oppføringer kan flyttes eller kopieres
+  mellom databasene.
 - **Oppføringstyper med maler:** pålogging, API/app-registrering, sertifikat, database, server og
   notat. Hver type har egne felt, og malene (f.eks. Entra ID-appregistrering) fyller inn en
   fornyelsesrutine.
@@ -133,4 +138,5 @@ assets/       ikoner og Windows-ressursfil
 
 Se [docs/fase2.md](docs/fase2.md). Kort fortalt: hver bruker har sin personlige database, og alle
 kobler seg i tillegg til én felles database i SQL Server, der alle ser alt. Appen kan ha flere
-databaser åpne samtidig. Steg 2a (lagringsabstraksjon) og 2b (personlig database i SQL Server) er ferdige.
+databaser åpne samtidig. Steg 2a (lagringsabstraksjon), 2b (personlig database i SQL Server) og
+2c (flere databaser samtidig) er ferdige.

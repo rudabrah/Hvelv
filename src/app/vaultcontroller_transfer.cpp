@@ -95,7 +95,8 @@ void VaultController::previewVaultImport(const QUrl &file, const QString &passwo
     watcher->setFuture(QtConcurrent::run([path, pw] { return VaultFile::open(path, pw); }));
 }
 
-QVariantMap VaultController::commitImport(bool skipDuplicates, const QString &customer, const QString &tag)
+QVariantMap VaultController::commitImport(bool skipDuplicates, const QString &customer, const QString &tag,
+                                          const QString &targetKey)
 {
     if (!isUnlocked() || !m_pendingImport.ok)
         return {{QStringLiteral("ok"), false}};
@@ -103,18 +104,22 @@ QVariantMap VaultController::commitImport(bool skipDuplicates, const QString &cu
     options.skipDuplicates = skipDuplicates;
     options.customer = customer;
     options.tag = tag;
+    const QString key = targetKey.isEmpty() ? MainKey : targetKey;
+    const VaultData *target = localData(key);
+    if (!target)
+        return {{QStringLiteral("ok"), false}};
     // merge() legger bare til, så det nye er det som kommer etter det som fantes fra før.
-    VaultData merged = data();
+    // Duplikater sjekkes mot måldatabasen.
+    VaultData merged = *target;
     const auto stats = importexport::merge(merged, m_pendingImport, options);
     ChangeSet changes;
-    changes.upsertEntries = merged.entries.mid(data().entries.size());
-    changes.upsertContacts = merged.contacts.mid(data().contacts.size());
+    changes.upsertEntries = merged.entries.mid(target->entries.size());
+    changes.upsertContacts = merged.contacts.mid(target->contacts.size());
+    qualifyChanges(key, changes);
     if (!commit(changes))
         return {{QStringLiteral("ok"), false}};
     m_pendingImport = {};
-    m_model->setContacts(data().contacts);
-    m_model->setEntries(data().entries);
-    afterDataChange();
+    refreshModels();
     emit toast(stats.skipped > 0
                    ? QStringLiteral("Importerte %1 oppføringer (%2 duplikater hoppet over).").arg(stats.added).arg(stats.skipped)
                    : QStringLiteral("Importerte %1 oppføringer.").arg(stats.added));
@@ -129,36 +134,41 @@ void VaultController::cancelImport()
     m_pendingImport = {};
 }
 
-bool VaultController::exportCsv(const QUrl &target)
+bool VaultController::exportCsv(const QUrl &target, const QString &sourceKey)
 {
-    if (!isUnlocked())
+    const VaultData *src = localData(sourceKey);
+    if (!src)
         return false;
     QSaveFile out(localPath(target));
-    QByteArray csv = importexport::exportCsv(data());
+    QByteArray csv = importexport::exportCsv(*src);
     const bool ok = out.open(QIODevice::WriteOnly) && out.write(csv) == csv.size() && out.commit();
     csv.fill('\0');
     if (!ok) {
         setError(QStringLiteral("Kunne ikke skrive filen: %1").arg(out.errorString()));
         return false;
     }
-    emit toast(QStringLiteral("Eksporterte %1 oppføringer til CSV (ukryptert!).").arg(data().entries.size()));
+    emit toast(QStringLiteral("Eksporterte %1 oppføringer til CSV (ukryptert!).").arg(src->entries.size()));
     return true;
 }
 
-void VaultController::exportVault(const QUrl &target, const QString &password)
+void VaultController::exportVault(const QUrl &target, const QString &password, const QString &sourceKey)
 {
-    if (!isUnlocked() || m_busy)
+    const VaultData *src = localData(sourceKey);
+    if (!src || m_busy)
         return;
+    const QString srcLocation = source(sourceKey.isEmpty() ? MainKey : sourceKey)->location;
     QString path = localPath(target);
     if (!path.endsWith(QLatin1String(".hvelv"), Qt::CaseInsensitive))
         path += QStringLiteral(".hvelv");
-    if (!vaultIsSql() && QFileInfo(path).canonicalFilePath() == QFileInfo(m_path).canonicalFilePath()) {
+    if (!SqlLocation::isSqlLocation(srcLocation) && QFileInfo(path).canonicalFilePath() == QFileInfo(srcLocation).canonicalFilePath()) {
         emit exportFinished(false, QStringLiteral("Velg en annen fil enn hvelvet som er åpent."));
         return;
     }
     setBusy(true);
     const QByteArray pw = password.toUtf8();
-    const VaultData snapshot = data();
+    VaultData snapshot = *src;
+    // Lagrede tilkoblinger (med passord til andre databaser) skal ikke følge med i en kopi.
+    snapshot.settings.remove(QStringLiteral("connections"));
     auto *watcher = new QFutureWatcher<VaultFile::Status>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, path] {
         const auto status = watcher->result();
@@ -180,25 +190,30 @@ void VaultController::exportVault(const QUrl &target, const QString &password)
     }));
 }
 
-void VaultController::exportToSql(const QString &server, const QString &database, const QString &password)
+void VaultController::exportToSql(const QString &server, const QString &database, const QString &password,
+                                  const QString &sourceKey)
 {
-    if (!isUnlocked() || m_busy)
+    const VaultData *src = localData(sourceKey);
+    if (!src || m_busy)
         return;
     const SqlLocation loc{server.trimmed(), database.trimmed()};
     if (loc.server.isEmpty() || !SqlLocation::isValidDatabaseName(loc.database)) {
         emit exportFinished(false, QStringLiteral("Oppgi server og et gyldig databasenavn (bokstaver, tall, _ og -)."));
         return;
     }
-    if (loc.toString().compare(m_path, Qt::CaseInsensitive) == 0) {
+    bool alreadyOpen = false;
+    for (const auto &s : std::as_const(m_sources))
+        alreadyOpen = alreadyOpen || loc.toString().compare(s.location, Qt::CaseInsensitive) == 0;
+    if (alreadyOpen) {
         emit exportFinished(false, QStringLiteral("Velg en annen database enn den som er åpen."));
         return;
     }
     setBusy(true);
     const QByteArray pw = password.toUtf8();
     ChangeSet everything;
-    everything.upsertContacts = data().contacts;
-    everything.upsertEntries = data().entries;
-    everything.settings = data().settings;
+    everything.upsertContacts = src->contacts;
+    everything.upsertEntries = src->entries;
+    // Innstillingene (bl.a. lagrede tilkoblinger med passord) følger ikke med i kopien.
     const qsizetype count = everything.upsertEntries.size();
 
     auto *watcher = new QFutureWatcher<VaultStore::Result>(this);

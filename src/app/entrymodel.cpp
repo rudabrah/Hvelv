@@ -6,6 +6,14 @@
 using hvelv::Entry;
 using hvelv::ExpiryStatus;
 
+namespace {
+QString sourceKey(const QString &id)
+{
+    const qsizetype colon = id.indexOf(QLatin1Char(':'));
+    return colon > 0 ? id.left(colon) : QStringLiteral("main");
+}
+} // namespace
+
 QString expiryStatusString(ExpiryStatus s)
 {
     switch (s) {
@@ -48,6 +56,8 @@ QVariant EntryModel::data(const QModelIndex &index, int role) const
     }
     case ExpiryStatusRole: return expiryStatusString(e.expiryStatus());
     case ReminderChannelRole: return hvelv::reminderChannelToString(e.reminderChannel);
+    case SourceRole: return sourceKey(e.id);
+    case SourceNameRole: return m_sourceNames.value(sourceKey(e.id));
     case SearchTextRole: {
         QStringList parts{e.title, e.url, e.customer, e.system, e.environment, e.username,
                           e.owner, e.twoFactorPlatform, e.tags.join(' '), e.notes, e.renewalProcedure};
@@ -85,6 +95,8 @@ QHash<int, QByteArray> EntryModel::roleNames() const
         {DaysLeftRole, "daysLeft"},
         {ExpiryStatusRole, "expiryStatus"},
         {ReminderChannelRole, "reminderChannel"},
+        {SourceRole, "source"},
+        {SourceNameRole, "sourceName"},
     };
 }
 
@@ -100,6 +112,12 @@ void EntryModel::setContacts(const QList<hvelv::Contact> &contacts)
     m_contactSearch.clear();
     for (const auto &c : contacts)
         m_contactSearch.insert(c.id, QStringList{c.name, c.email, c.company, c.role, c.phone}.join(' '));
+    refreshAll();
+}
+
+void EntryModel::setSourceNames(const QHash<QString, QString> &names)
+{
+    m_sourceNames = names;
     refreshAll();
 }
 

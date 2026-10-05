@@ -34,6 +34,13 @@ AppDialog {
         anchors.fill: parent
         spacing: 10
 
+        RowLayout {
+            visible: Vault.openSourceCount > 1
+            Layout.fillWidth: true
+            Label { text: "Eksporter fra" }
+            SourceComboBox { id: exportSource; Layout.fillWidth: true }
+        }
+
         SectionHeader { text: "Kryptert kopi (anbefalt)" }
         Label {
             text: "Lager en ny .hvelv-fil med alt innhold, også vedlegg, beskyttet med et eget passord. "
@@ -70,7 +77,7 @@ AppDialog {
                 text: "Kopier"
                 enabled: !Vault.busy && dialog.passwordOk && sqlServer.text.trim().length > 0
                          && Vault.isValidDatabaseName(sqlDatabase.text.trim())
-                onClicked: Vault.exportToSql(sqlServer.text, sqlDatabase.text, pw.text)
+                onClicked: Vault.exportToSql(sqlServer.text, sqlDatabase.text, pw.text, exportSource.currentKey)
             }
         }
 
@@ -105,7 +112,7 @@ AppDialog {
         fileMode: FileDialog.SaveFile
         defaultSuffix: "hvelv"
         nameFilters: ["Hvelv-filer (*.hvelv)"]
-        onAccepted: Vault.exportVault(selectedFile, pw.text)
+        onAccepted: Vault.exportVault(selectedFile, pw.text, exportSource.currentKey)
     }
 
     FileDialog {
@@ -115,7 +122,7 @@ AppDialog {
         defaultSuffix: "csv"
         nameFilters: ["CSV (*.csv)"]
         onAccepted: {
-            if (Vault.exportCsv(selectedFile)) {
+            if (Vault.exportCsv(selectedFile, exportSource.currentKey)) {
                 dialog.message = "CSV lagret. Husk å slette den etter bruk."
                 dialog.messageOk = true
             }

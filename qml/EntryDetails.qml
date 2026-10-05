@@ -1,5 +1,6 @@
 pragma ComponentBehavior: Bound
 
+import QtQml
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -18,6 +19,7 @@ ScrollView {
 
     signal editRequested()
     signal deleteRequested()
+    signal entryMoved(string newId)
 
     function channelText(c) {
         return c === "email" ? "E-post" : c === "both" ? "I appen og på e-post" : "I appen"
@@ -87,7 +89,8 @@ ScrollView {
                     Layout.fillWidth: true
                 }
                 Label {
-                    text: [root.e.typeLabel, root.e.customer, root.e.system].filter(s => s).join("  ·  ")
+                    text: [root.e.typeLabel, root.e.customer, root.e.system,
+                           Vault.openSourceCount > 1 ? "i «" + root.e.sourceName + "»" : ""].filter(s => s).join("  ·  ")
                     visible: text !== ""
                     color: palette.placeholderText
                 }
@@ -100,6 +103,43 @@ ScrollView {
             Button {
                 text: "Slett"
                 onClicked: root.deleteRequested()
+            }
+            ToolButton {
+                text: "⋯"
+                font.pixelSize: 18
+                visible: Vault.openSourceCount > 1
+                onClicked: moveMenu.popup()
+                Menu {
+                    id: moveMenu
+                    Instantiator {
+                        model: Vault.sources.filter(s => s.open && s.key !== root.e.source)
+                        delegate: MenuItem {
+                            required property var modelData
+                            text: "Flytt til «" + modelData.name + "»"
+                            onTriggered: {
+                                const id = Vault.copyEntryTo(root.entryId, modelData.key, true)
+                                if (id !== "")
+                                    root.entryMoved(id)
+                            }
+                        }
+                        onObjectAdded: (index, object) => moveMenu.insertItem(index, object)
+                        onObjectRemoved: (index, object) => moveMenu.removeItem(object)
+                    }
+                    Instantiator {
+                        model: Vault.sources.filter(s => s.open && s.key !== root.e.source)
+                        delegate: MenuItem {
+                            required property var modelData
+                            text: "Kopier til «" + modelData.name + "»"
+                            onTriggered: {
+                                const id = Vault.copyEntryTo(root.entryId, modelData.key, false)
+                                if (id !== "")
+                                    root.entryMoved(id)
+                            }
+                        }
+                        onObjectAdded: (index, object) => moveMenu.addItem(object)
+                        onObjectRemoved: (index, object) => moveMenu.removeItem(object)
+                    }
+                }
             }
         }
 

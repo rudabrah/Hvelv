@@ -12,6 +12,9 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+#include <QJsonArray>
+
+#include <functional>
 #include <memory>
 
 class EntryModel;
@@ -32,6 +35,9 @@ class VaultController : public QObject
     Q_PROPERTY(bool vaultIsSql READ vaultIsSql NOTIFY vaultPathChanged)
     Q_PROPERTY(QString vaultDisplayName READ vaultDisplayName NOTIFY vaultPathChanged)
     Q_PROPERTY(bool unlocked READ isUnlocked NOTIFY unlockedChanged)
+    // Åpne databaser: [{key, name, location, displayLocation, isMain, isSql, open, opening, error, count}]
+    Q_PROPERTY(QVariantList sources READ sources NOTIFY sourcesChanged)
+    Q_PROPERTY(int openSourceCount READ openSourceCount NOTIFY sourcesChanged)
     Q_PROPERTY(bool busy READ isBusy NOTIFY busyChanged)
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
     Q_PROPERTY(EntryFilterModel *entries READ entries CONSTANT)
@@ -69,7 +75,9 @@ public:
     bool vaultExists() const;
     bool vaultIsSql() const;
     QString vaultDisplayName() const;
-    bool isUnlocked() const { return m_store != nullptr; }
+    bool isUnlocked() const { return !m_sources.isEmpty() && m_sources.first().store; }
+    QVariantList sources() const;
+    int openSourceCount() const;
     bool isBusy() const { return m_busy; }
     QString errorMessage() const { return m_error; }
     EntryFilterModel *entries() const { return m_filter; }
@@ -110,7 +118,8 @@ public:
     Q_INVOKABLE QUrl defaultVaultUrl() const;
 
     // Oppføringer
-    Q_INVOKABLE QVariantMap newEntry(int templateIndex = -1) const;
+    // sourceKey: databasen oppføringen skal lagres i (tom = hoveddatabasen)
+    Q_INVOKABLE QVariantMap newEntry(int templateIndex = -1, const QString &sourceKey = {}) const;
     Q_INVOKABLE QVariantMap entryType(const QString &key) const;
     Q_INVOKABLE QVariantMap entry(const QString &id) const;
     Q_INVOKABLE QString saveEntry(const QVariantMap &map); // returnerer id, eller tom streng ved feil
@@ -129,7 +138,8 @@ public:
     // Import: forhåndsvis først, så commitImport(). Hvelv-filer krever passord (asynkront).
     Q_INVOKABLE QVariantMap previewImport(const QUrl &file);
     Q_INVOKABLE void previewVaultImport(const QUrl &file, const QString &password); // -> importPreviewReady
-    Q_INVOKABLE QVariantMap commitImport(bool skipDuplicates, const QString &customer, const QString &tag);
+    Q_INVOKABLE QVariantMap commitImport(bool skipDuplicates, const QString &customer, const QString &tag,
+                                         const QString &targetKey = {});
     Q_INVOKABLE void cancelImport();
 
     // Kalender (.ics). Uten hemmeligheter.
@@ -137,10 +147,21 @@ public:
     Q_INVOKABLE bool openInCalendar(const QString &entryId); // åpner .ics i standard kalenderapp
 
     // Eksport
-    Q_INVOKABLE bool exportCsv(const QUrl &target);
-    Q_INVOKABLE void exportVault(const QUrl &target, const QString &password); // -> exportFinished
+    Q_INVOKABLE bool exportCsv(const QUrl &target, const QString &sourceKey = {});
+    Q_INVOKABLE void exportVault(const QUrl &target, const QString &password, const QString &sourceKey = {}); // -> exportFinished
     // Ny SQL Server-database med alt innhold, låst med password. -> exportFinished
-    Q_INVOKABLE void exportToSql(const QString &server, const QString &database, const QString &password);
+    Q_INVOKABLE void exportToSql(const QString &server, const QString &database, const QString &password,
+                                 const QString &sourceKey = {});
+
+    // Tilleggsdatabaser. Resultat -> connectionFinished. Passordet lagres kryptert i hoveddatabasen.
+    Q_INVOKABLE void addFileConnection(const QString &name, const QUrl &file, const QString &password, bool create);
+    Q_INVOKABLE void addSqlConnection(const QString &name, const QString &server, const QString &database,
+                                      const QString &password, bool create);
+    Q_INVOKABLE void unlockConnection(const QString &key, const QString &password);
+    Q_INVOKABLE bool removeConnection(const QString &key); // sletter ikke selve databasen
+    Q_INVOKABLE QString displayPath(const QUrl &file) const;
+    // Kopierer (eller flytter) en oppføring til en annen åpen database. Returnerer ny id.
+    Q_INVOKABLE QString copyEntryTo(const QString &id, const QString &targetKey, bool move);
 
     // Auto-Type: målvinduet huskes når hurtigtasten trykkes.
     Q_INVOKABLE void requestQuickSearch();
@@ -188,6 +209,8 @@ signals:
     void entryChanged(const QString &id);   // f.eks. nytt vedlegg
     void importPreviewReady(const QVariantMap &preview);
     void exportFinished(bool ok, const QString &message);
+    void sourcesChanged();
+    void connectionFinished(bool ok, const QString &message);
     void healthChanged();
     void breachCheckFinished(bool ok, const QString &message);
     void tlsChecked(const QString &target, const QVariantMap &result);
@@ -204,9 +227,36 @@ private:
     void setBusy(bool busy);
     void setError(const QString &message);
     void setPath(const QString &path, bool remember = true);
-    // Lagrer endringene i hvelvet som er åpent. Setter feilmelding og returnerer false ved feil.
+    // En åpen (eller ventende) database. m_sources[0] er hoveddatabasen.
+    struct Source
+    {
+        QString key;      // MainKey eller tilkoblingens id
+        QString name;
+        QString location; // filsti eller sqlserver://…
+        std::shared_ptr<hvelv::VaultStore> store; // null = ikke åpnet (se error)
+        QString error;
+        bool opening = false;
+    };
+    static const QString MainKey;
+    static QString sourceKeyOf(const QString &id);
+    static QString localIdOf(const QString &id);
+    static QString qualify(const QString &key, const QString &localId);
+    static void qualifyChanges(const QString &key, hvelv::ChangeSet &changes);
+
+    // Lagrer endringer (id-er som i data()) i databasen de hører til. Setter feilmelding ved feil.
     bool commit(const hvelv::ChangeSet &changes);
-    const hvelv::VaultData &data() const; // tomt når hvelvet er låst
+    const hvelv::VaultData &data() const;   // alle åpne databaser; tomt når låst
+    const hvelv::VaultData *localData(const QString &key) const; // én database med egne id-er
+    Source *source(const QString &key);
+    const Source *source(const QString &key) const;
+    QString sourceName(const QString &key) const;
+    void startMain(std::shared_ptr<hvelv::VaultStore> store);
+    void openSource(const QString &key, const QByteArray &password, bool create,
+                    const std::function<void(bool, const QString &)> &done);
+    void addConnection(const QString &name, const QString &location, const QString &password, bool create);
+    bool updateConnections(const std::function<void(QJsonArray &)> &fn);
+    void rebuildMerged();
+    void refreshModels();
     void afterDataChange();            // oppdaterer modell-kontakter, tellere og signaler
     NetworkChecks *net();
     void initAutoType();
@@ -219,7 +269,9 @@ private:
     QString m_path;
     bool m_sessionOnlyPath = false;
     bool m_sqlCreate = false; // valgt SQL-database skal opprettes, ikke åpnes
-    std::shared_ptr<hvelv::VaultStore> m_store; // null = låst
+    QList<Source> m_sources;  // tom = låst
+    hvelv::VaultData m_merged;
+    int m_generation = 0;     // økes ved låsing, så svar fra bakgrunnsåpning kan forkastes
     EntryModel *m_model;
     EntryFilterModel *m_filter;
     bool m_busy = false;

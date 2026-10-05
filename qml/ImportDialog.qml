@@ -111,6 +111,8 @@ AppDialog {
                 columns: 2
                 columnSpacing: 12
                 Layout.fillWidth: true
+                Label { text: "Importer til"; visible: Vault.openSourceCount > 1 }
+                SourceComboBox { id: importTarget; visible: Vault.openSourceCount > 1; Layout.fillWidth: true }
                 Label { text: "Sett kunde på alle" }
                 ComboBox {
                     id: customer
@@ -141,7 +143,8 @@ AppDialog {
                 enabled: (dialog.preview.count || 0) > 0
                 Layout.alignment: Qt.AlignRight
                 onClicked: {
-                    const r = Vault.commitImport(skipDuplicates.checked, customer.editText.trim(), tag.text.trim())
+                    const r = Vault.commitImport(skipDuplicates.checked, customer.editText.trim(), tag.text.trim(),
+                                                 importTarget.currentKey)
                     if (r.ok)
                         dialog.accept()
                 }

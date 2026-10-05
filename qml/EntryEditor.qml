@@ -18,6 +18,7 @@ Item {
     property var fieldValues: ({})
     property var customFields: []
     property var contactIds: []
+    property string targetSource: "main" // databasen oppføringen lagres i
     property var attachments: []
     property url pendingCertificate: ""  // legges ved etter første lagring
     property string tlsTarget: ""        // venter på svar fra Vault.checkTls
@@ -30,6 +31,7 @@ Item {
         fieldValues = Object.assign({}, source.fields || {})
         customFields = (source.customFields || []).map(f => Object.assign({}, f))
         contactIds = (source.contactIds || []).slice()
+        targetSource = source.source || "main"
         attachments = source.attachments || []
         pendingCertificate = ""
         title.text = source.title || ""
@@ -71,6 +73,7 @@ Item {
         m.twoFactorPlatform = platform.editText.trim()
         m.totpSecret = totpSecret.text.trim()
         m.contactIds = contactIds
+        m.source = targetSource
         m.owner = owner.editText.trim()
         m.expiresAt = expiresAt.text.trim()
         m.reminderDays = reminderDays.value
@@ -230,6 +233,22 @@ Item {
 
                 // --- Type og system ---
                 SectionHeader { text: "System"; Layout.columnSpan: 2 }
+                Label { text: "Lagre i"; visible: Vault.openSourceCount > 1 }
+                SourceComboBox {
+                    id: sourceBox
+                    visible: Vault.openSourceCount > 1
+                    enabled: root.isNew
+                    currentKey: root.targetSource
+                    Layout.fillWidth: true
+                    onActivated: {
+                        root.targetSource = currentKey
+                        // Kontakter hører til databasen sin.
+                        root.contactIds = root.contactIds.filter(id => {
+                            const i = id.indexOf(":")
+                            return (i > 0 ? id.substring(0, i) : "main") === root.targetSource
+                        })
+                    }
+                }
                 Label { text: "Type" }
                 ComboBox {
                     id: typeBox
@@ -527,7 +546,7 @@ Item {
                     ComboBox {
                         id: contactPicker
                         Layout.fillWidth: true
-                        readonly property var available: Vault.contacts.filter(c => !root.contactIds.includes(c.id))
+                        readonly property var available: Vault.contacts.filter(c => c.source === root.targetSource && !root.contactIds.includes(c.id))
                         model: available
                         textRole: "name"
                         displayText: available.length > 0 ? "Koble til eksisterende kontakt …" : "Ingen andre kontakter"
@@ -538,7 +557,7 @@ Item {
                             currentIndex = -1
                         }
                     }
-                    Button { text: "Ny kontakt…"; onClicked: contactEditor.edit({ company: customer.editText }) }
+                    Button { text: "Ny kontakt…"; onClicked: contactEditor.edit({ company: customer.editText, source: root.targetSource }) }
                 }
 
                 // --- Internt ---

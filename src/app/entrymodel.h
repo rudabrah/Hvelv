@@ -32,6 +32,8 @@ public:
         ExpiryStatusRole, // "none" | "ok" | "soon" | "expired"
         ReminderChannelRole,
         SearchTextRole,
+        SourceRole,     // databasens nøkkel ("main" for hoveddatabasen)
+        SourceNameRole, // databasens navn
     };
 
     using QAbstractListModel::QAbstractListModel;
@@ -43,6 +45,8 @@ public:
     void setEntries(const QList<hvelv::Entry> &entries);
     // Kontaktenes navn/e-post/firma tas med i søketeksten.
     void setContacts(const QList<hvelv::Contact> &contacts);
+    // Navn på databasene, etter nøkkel. Id-er med prefiks "<nøkkel>:" hører til tilleggsdatabaser.
+    void setSourceNames(const QHash<QString, QString> &names);
     void upsert(const hvelv::Entry &entry);
     void remove(const QString &id);
     void refreshAll(); // f.eks. når dagen skifter
@@ -51,6 +55,7 @@ private:
     int rowOf(const QString &id) const;
     QList<hvelv::Entry> m_entries;
     QHash<QString, QString> m_contactSearch; // kontakt-id -> søketekst
+    QHash<QString, QString> m_sourceNames;
 };
 
 QString expiryStatusString(hvelv::ExpiryStatus s);

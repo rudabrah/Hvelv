@@ -14,6 +14,8 @@ class EntryFilterModel : public QSortFilterProxyModel
     Q_PROPERTY(QString filter READ filter WRITE setFilter NOTIFY filterChanged)
     Q_PROPERTY(QString ownerFilter READ ownerFilter WRITE setOwnerFilter NOTIFY ownerFilterChanged)
     Q_PROPERTY(QString customerFilter READ customerFilter WRITE setCustomerFilter NOTIFY customerFilterChanged)
+    // Databasens nøkkel, tom = alle
+    Q_PROPERTY(QString sourceFilter READ sourceFilter WRITE setSourceFilter NOTIFY sourceFilterChanged)
     // Ikke tom = vis bare disse (brukes av Auto-Type når flere oppføringer passer)
     Q_PROPERTY(QStringList onlyIds READ onlyIds WRITE setOnlyIds NOTIFY onlyIdsChanged)
     Q_PROPERTY(int count READ count NOTIFY countChanged)
@@ -29,6 +31,8 @@ public:
     void setOwnerFilter(const QString &owner);
     QString customerFilter() const { return m_customer; }
     void setCustomerFilter(const QString &customer);
+    QString sourceFilter() const { return m_source; }
+    void setSourceFilter(const QString &source);
     QStringList onlyIds() const { return m_onlyIds; }
     void setOnlyIds(const QStringList &ids);
     int count() const { return rowCount(); }
@@ -41,6 +45,7 @@ signals:
     void filterChanged();
     void ownerFilterChanged();
     void customerFilterChanged();
+    void sourceFilterChanged();
     void onlyIdsChanged();
     void countChanged();
 
@@ -53,5 +58,6 @@ private:
     QString m_filter = QStringLiteral("all");
     QString m_owner;    // tom = alle
     QString m_customer; // tom = alle
+    QString m_source;   // tom = alle
     QStringList m_onlyIds;
 };

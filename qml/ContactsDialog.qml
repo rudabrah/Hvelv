@@ -34,10 +34,11 @@ AppDialog {
                 Layout.fillWidth: true
                 onTextChanged: dialog.filterText = text
             }
+            SourceComboBox { id: newContactSource; visible: Vault.openSourceCount > 1 }
             Button {
                 text: "Ny kontakt"
                 highlighted: true
-                onClicked: editor.edit({})
+                onClicked: editor.edit({ source: newContactSource.currentKey })
             }
         }
 
@@ -64,7 +65,8 @@ AppDialog {
                             font.weight: Font.DemiBold
                         }
                         Label {
-                            text: [row.modelData.role, row.modelData.company, row.modelData.email, row.modelData.phone]
+                            text: [row.modelData.role, row.modelData.company, row.modelData.email, row.modelData.phone,
+                                   Vault.openSourceCount > 1 ? "i «" + row.modelData.sourceName + "»" : ""]
                                   .filter(s => s).join("  ·  ")
                             color: palette.placeholderText
                             font.pixelSize: 12

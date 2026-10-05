@@ -52,6 +52,16 @@ void EntryFilterModel::setCustomerFilter(const QString &customer)
     emit countChanged();
 }
 
+void EntryFilterModel::setSourceFilter(const QString &source)
+{
+    if (m_source == source)
+        return;
+    m_source = source;
+    invalidateRowsFilter();
+    emit sourceFilterChanged();
+    emit countChanged();
+}
+
 void EntryFilterModel::setOnlyIds(const QStringList &ids)
 {
     if (m_onlyIds == ids)
@@ -91,6 +101,8 @@ bool EntryFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex &source
     if (!m_onlyIds.isEmpty() && !m_onlyIds.contains(idx.data(EntryModel::IdRole).toString()))
         return false;
     if (!m_owner.isEmpty() && idx.data(EntryModel::OwnerRole).toString().compare(m_owner, Qt::CaseInsensitive) != 0)
+        return false;
+    if (!m_source.isEmpty() && idx.data(EntryModel::SourceRole).toString() != m_source)
         return false;
     if (!m_customer.isEmpty() && idx.data(EntryModel::CustomerRole).toString().compare(m_customer, Qt::CaseInsensitive) != 0)
         return false;

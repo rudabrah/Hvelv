@@ -17,7 +17,7 @@ FocusScope {
     property int revision: 0
 
     function startNew(templateIndex) {
-        editSource = Vault.newEntry(templateIndex === undefined ? -1 : templateIndex)
+        editSource = Vault.newEntry(templateIndex === undefined ? -1 : templateIndex, Vault.entries.sourceFilter)
         editing = true
     }
 
@@ -30,10 +30,13 @@ FocusScope {
     function openDialog(name) {
         healthDialog.close()
         settings.close()
+        databases.close()
         if (name === "health")
             healthDialog.open()
         else if (name === "settings")
             settings.open()
+        else if (name === "databases")
+            databases.open()
     }
 
     function focusList() {
@@ -95,6 +98,7 @@ FocusScope {
                 Menu {
                     id: menu
                     MenuItem { text: "Kontaktpersoner…"; onTriggered: contacts.open() }
+                    MenuItem { text: "Databaser…"; onTriggered: databases.open() }
                     MenuItem { text: "Passordhelse…"; onTriggered: healthDialog.open() }
                     MenuSeparator {}
                     MenuItem { text: "Importer…"; onTriggered: importer.start() }
@@ -136,6 +140,16 @@ FocusScope {
                 }
             }
             Item { Layout.fillWidth: true }
+            ComboBox {
+                id: sourceFilter
+                objectName: "sourceFilter"
+                visible: Vault.sources.length > 1
+                Layout.preferredWidth: 170
+                readonly property var keys: [""].concat(Vault.sources.map(s => s.key))
+                model: ["Alle databaser"].concat(Vault.sources.map(s => s.name))
+                currentIndex: Math.max(0, keys.indexOf(Vault.entries.sourceFilter))
+                onActivated: (i) => Vault.entries.sourceFilter = keys[i]
+            }
             ComboBox {
                 id: customerFilter
                 Layout.preferredWidth: 190
@@ -200,6 +214,7 @@ FocusScope {
                     required property string expiryStatus
                     required property var daysLeft
                     required property bool hasTotp
+                    required property string sourceName
 
                     width: ListView.view.width
                     highlighted: ListView.isCurrentItem
@@ -242,6 +257,17 @@ FocusScope {
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
                             }
+                        }
+                        Label {
+                            visible: Vault.openSourceCount > 1
+                            text: row.sourceName
+                            font.pixelSize: 11
+                            color: palette.placeholderText
+                            leftPadding: 6
+                            rightPadding: 6
+                            topPadding: 1
+                            bottomPadding: 1
+                            background: Rectangle { radius: 4; color: "transparent"; border.color: palette.mid }
                         }
                         ExpiryBadge {
                             status: row.expiryStatus === "ok" ? "none" : row.expiryStatus
@@ -289,6 +315,10 @@ FocusScope {
                     revision: page.revision
                     onEditRequested: page.startEdit()
                     onDeleteRequested: confirmDelete.open()
+                    onEntryMoved: (id) => {
+                        page.revision++
+                        page.select(id)
+                    }
                 }
 
                 Label {
@@ -335,6 +365,12 @@ FocusScope {
         anchors.centerIn: parent
     }
 
+    DatabasesDialog {
+        id: databases
+        objectName: "databasesDialog"
+        anchors.centerIn: parent
+    }
+
     ExportDialog {
         id: exporter
         anchors.centerIn: parent
@@ -358,7 +394,8 @@ FocusScope {
         standardButtons: Dialog.Yes | Dialog.No
         Label {
             width: confirmDelete.availableWidth
-            text: "«" + (Vault.entry(page.selectedId).title || "") + "» slettes permanent fra hvelvet."
+            text: "«" + (Vault.entry(page.selectedId).title || "") + "» slettes permanent fra «"
+                  + (Vault.entry(page.selectedId).sourceName || "hvelvet") + "»."
             wrapMode: Text.WordWrap
         }
         onAccepted: {

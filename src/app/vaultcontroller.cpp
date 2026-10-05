@@ -6,6 +6,7 @@
 #include "filestore.h"
 #include "passwordgenerator.h"
 #include "sqlstore.h"
+#include "storeopen.h"
 #include "totp.h"
 
 #include <QClipboard>
@@ -56,35 +57,6 @@ QString describeExpiry(const Entry &e)
     return QStringLiteral("%1 – utløper om %2 dager").arg(e.title).arg(d);
 }
 
-// Åpner eller oppretter hvelvet på path: fil eller "sqlserver://server/database".
-struct Opened
-{
-    VaultStore::Result result;
-    std::shared_ptr<VaultStore> store;
-    QStringList rejected; // endret utenom Hvelv (bare SQL)
-};
-
-Opened openOrCreate(const QString &path, const QByteArray &password, bool create)
-{
-    Opened o;
-    if (SqlLocation::isSqlLocation(path)) {
-        const auto loc = SqlLocation::parse(path);
-        if (!loc) {
-            o.result = {VaultStore::Error::BadFormat, QStringLiteral("Ugyldig SQL Server-adresse: %1").arg(path)};
-            return o;
-        }
-        auto r = create ? SqlStore::create(*loc, password) : SqlStore::open(*loc, password);
-        o.result = r.result;
-        o.store = std::move(r.store);
-        o.rejected = r.rejected;
-    } else {
-        auto r = create ? FileStore::create(path, password) : FileStore::open(path, password);
-        o.result = r.result;
-        o.store = std::move(r.store);
-    }
-    return o;
-}
-
 } // namespace
 
 VaultController::VaultController(QObject *parent)
@@ -125,7 +97,7 @@ VaultController::~VaultController()
 {
     if (!m_lastClipboard.isEmpty() && QGuiApplication::clipboard()->text() == m_lastClipboard)
         QGuiApplication::clipboard()->clear();
-    m_store.reset();
+    m_sources.clear();
 }
 
 void VaultController::setTrayIcon(QSystemTrayIcon *tray)
@@ -147,9 +119,7 @@ bool VaultController::vaultIsSql() const
 
 QString VaultController::vaultDisplayName() const
 {
-    if (const auto loc = SqlLocation::parse(m_path))
-        return QStringLiteral("%1 på %2 (SQL Server)").arg(loc->database, loc->server);
-    return m_path;
+    return describeLocation(m_path);
 }
 
 int VaultController::autoLockMinutes() const
@@ -277,9 +247,9 @@ void VaultController::createVault(const QString &masterPassword)
     setBusy(true);
 
     const QByteArray pw = masterPassword.toUtf8();
-    auto *watcher = new QFutureWatcher<Opened>(this);
+    auto *watcher = new QFutureWatcher<OpenedStore>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, path] {
-        Opened r = watcher->result();
+        OpenedStore r = watcher->result();
         watcher->deleteLater();
         setBusy(false);
         if (!r.result.ok()) {
@@ -288,17 +258,14 @@ void VaultController::createVault(const QString &masterPassword)
         }
         m_sqlCreate = false;
         setPath(path, !m_sessionOnlyPath);
-        m_store = std::move(r.store);
-        m_model->setContacts({});
-        m_model->setEntries({});
-        recount();
+        startMain(std::move(r.store));
         m_idleTimer.start(autoLockMinutes() * 60 * 1000);
         m_refreshTimer.start();
         emit unlockedChanged();
         emit dataChanged();
         emit toast(QStringLiteral("Nytt hvelv opprettet."));
     });
-    watcher->setFuture(QtConcurrent::run([path, pw] { return openOrCreate(path, pw, true); }));
+    watcher->setFuture(QtConcurrent::run([path, pw] { return openStore(path, pw, true); }));
 }
 
 void VaultController::unlock(const QString &masterPassword)
@@ -310,20 +277,16 @@ void VaultController::unlock(const QString &masterPassword)
 
     const QByteArray pw = masterPassword.toUtf8();
     const QString path = m_path;
-    auto *watcher = new QFutureWatcher<Opened>(this);
+    auto *watcher = new QFutureWatcher<OpenedStore>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
-        Opened r = watcher->result();
+        OpenedStore r = watcher->result();
         watcher->deleteLater();
         setBusy(false);
         if (!r.result.ok()) {
             setError(r.result.message);
             return;
         }
-        m_store = std::move(r.store);
-        m_model->setContacts(data().contacts);
-        m_model->setEntries(data().entries);
-        recount();
-        emit dataChanged();
+        startMain(std::move(r.store));
         m_lastRefreshDate = QDate::currentDate();
         m_idleTimer.start(autoLockMinutes() * 60 * 1000);
         m_refreshTimer.start();
@@ -335,17 +298,20 @@ void VaultController::unlock(const QString &masterPassword)
                                                      : QStringLiteral("%1 oppføringer").arg(r.rejected.size()),
                               r.rejected.join(QStringLiteral(", "))));
     });
-    watcher->setFuture(QtConcurrent::run([path, pw] { return openOrCreate(path, pw, false); }));
+    watcher->setFuture(QtConcurrent::run([path, pw] { return openStore(path, pw, false); }));
 }
 
 void VaultController::lock()
 {
     if (!isUnlocked())
         return;
-    m_store.reset();
+    ++m_generation;
+    m_sources.clear();
+    m_merged = {};
     m_model->setEntries({});
     m_model->setContacts({});
     m_filter->setSearchText({});
+    m_filter->setSourceFilter({});
     m_filter->setOwnerFilter({});
     m_filter->setCustomerFilter({});
     m_quickFilter->setSearchText({});
@@ -362,6 +328,7 @@ void VaultController::lock()
     recount();
     emit unlockedChanged();
     emit dataChanged();
+    emit sourcesChanged();
 }
 
 void VaultController::changeMasterPassword(const QString &current, const QString &next)
@@ -374,7 +341,7 @@ void VaultController::changeMasterPassword(const QString &current, const QString
     const QByteArray nxt = next.toUtf8();
     // Kopien av pekeren holder hvelvet i live selv om det låses mens Argon2 kjører.
     // commit() avviser endringer mens vi er opptatt, så ingen andre skriver samtidig.
-    const std::shared_ptr<VaultStore> store = m_store;
+    const std::shared_ptr<VaultStore> store = m_sources.first().store;
 
     auto *watcher = new QFutureWatcher<VaultStore::Result>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
@@ -391,28 +358,6 @@ void VaultController::changeMasterPassword(const QString &current, const QString
         emit toast(QStringLiteral("Hovedpassordet er byttet."));
     });
     watcher->setFuture(QtConcurrent::run([store, cur, nxt] { return store->changePassword(cur, nxt); }));
-}
-
-bool VaultController::commit(const ChangeSet &changes)
-{
-    if (!m_store)
-        return false;
-    if (m_busy) {
-        setError(QStringLiteral("Vent til forrige operasjon er ferdig."));
-        return false;
-    }
-    const VaultStore::Result r = m_store->apply(changes);
-    if (!r.ok()) {
-        setError(QStringLiteral("Kunne ikke lagre hvelvet: %1").arg(r.message));
-        return false;
-    }
-    return true;
-}
-
-const VaultData &VaultController::data() const
-{
-    static const VaultData empty;
-    return m_store ? m_store->data() : empty;
 }
 
 void VaultController::recount()

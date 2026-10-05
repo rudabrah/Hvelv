@@ -27,6 +27,7 @@ add_library(hvelv_core STATIC
     src/core/vaultstore.h    src/core/vaultstore.cpp
     src/core/filestore.h     src/core/filestore.cpp
     src/core/sqlstore.h      src/core/sqlstore.cpp
+    src/core/storeopen.h     src/core/storeopen.cpp
     src/core/totp.h          src/core/totp.cpp
     src/core/passwordgenerator.h src/core/passwordgenerator.cpp
 )
@@ -70,6 +71,7 @@ if(HVELV_BUILD_APP)
             src/app/autotyper.h        src/app/autotyper.cpp
             src/app/qrscanner.h        src/app/qrscanner.cpp
             src/app/vaultcontroller_qr.cpp
+            src/app/vaultcontroller_sources.cpp
             src/app/certificateinfo.h  src/app/certificateinfo.cpp
         QML_FILES
             qml/Main.qml
@@ -90,6 +92,8 @@ if(HVELV_BUILD_APP)
             qml/AppDialog.qml
             qml/QuickSearchWindow.qml
             qml/SqlDatabaseDialog.qml
+            qml/DatabasesDialog.qml
+            qml/SourceComboBox.qml
     )
     target_include_directories(hvelv_ui PUBLIC src/app)
     target_link_libraries(hvelv_ui PUBLIC

@@ -584,6 +584,108 @@ private slots:
         QVERIFY(!m_vault->scanQrFromFile(QUrl::fromLocalFile(QFINDTESTDATA("data/keepass.xml"))).value("ok").toBool());
     }
 
+    // En tilleggsdatabase ved siden av hoveddatabasen: lagring, kopiering, flytting og
+    // automatisk opplåsing med passordet som er lagret i hoveddatabasen.
+    void multipleDatabases()
+    {
+        QVERIFY(m_vault->isUnlocked());
+        const int mainCount = m_vault->totalCount();
+        const QString path = m_dir.filePath(QStringLiteral("felles.hvelv"));
+        QSignalSpy finished(m_vault, &VaultController::connectionFinished);
+        m_vault->addFileConnection(QStringLiteral("Felles"), QUrl::fromLocalFile(path), QStringLiteral("fellespassord1"), true);
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 20000);
+        QVERIFY2(finished.first().at(0).toBool(), qPrintable(finished.first().at(1).toString()));
+        QCOMPARE(m_vault->openSourceCount(), 2);
+        const QVariantMap felles = m_vault->sources().at(1).toMap();
+        const QString key = felles.value("key").toString();
+        QCOMPARE(felles.value("name").toString(), QStringLiteral("Felles"));
+        QVERIFY(felles.value("open").toBool());
+
+        // Samme fil to ganger avvises.
+        finished.clear();
+        m_vault->addFileConnection(QStringLiteral("Igjen"), QUrl::fromLocalFile(path), QStringLiteral("fellespassord1"), false);
+        QCOMPARE(finished.size(), 1);
+        QVERIFY(!finished.first().at(0).toBool());
+        QCOMPARE(m_vault->sources().size(), 2);
+
+        // Kontakt og oppføring i tilleggsdatabasen.
+        const QString contactId = m_vault->saveContact({{"name", QStringLiteral("Per Felles")},
+                                                        {"email", QStringLiteral("per@felles.no")},
+                                                        {"source", key}});
+        QVERIFY2(contactId.startsWith(key + ':'), qPrintable(contactId));
+        QVariantMap n = m_vault->newEntry(-1, key);
+        QCOMPARE(n.value("source").toString(), key);
+        n["title"] = QStringLiteral("Felles-konto");
+        n["password"] = QStringLiteral("delt-hemmelighet");
+        n["contactIds"] = QStringList{contactId, m_contactId}; // kontakten fra hoveddatabasen kan ikke kobles
+        const QString sharedId = m_vault->saveEntry(n);
+        QVERIFY2(sharedId.startsWith(key + ':'), qPrintable(m_vault->errorMessage()));
+        QCOMPARE(m_vault->totalCount(), mainCount + 1);
+        QCOMPARE(m_vault->entry(sharedId).value("sourceName").toString(), QStringLiteral("Felles"));
+        QCOMPARE(m_vault->entry(sharedId).value("contactIds").toStringList(), QStringList{contactId});
+
+        m_vault->entries()->setSourceFilter(key);
+        QCOMPARE(m_vault->entries()->count(), 1);
+        m_vault->entries()->setSourceFilter({});
+        QObject *page = findByName(m_window, "vaultPage");
+        page->setProperty("selectedId", sharedId);
+        snap(QStringLiteral("ui-30-two-databases"));
+
+        // Kopi fra hoveddatabasen: kontakten blir med, originalen blir liggende.
+        const QString copied = m_vault->copyEntryTo(m_soonId, key, false);
+        QVERIFY2(copied.startsWith(key + ':'), qPrintable(m_vault->errorMessage()));
+        QCOMPARE(m_vault->totalCount(), mainCount + 2);
+        QVERIFY(!m_vault->entry(m_soonId).isEmpty());
+        QCOMPARE(m_vault->entry(copied).value("password").toString(), m_vault->entry(m_soonId).value("password").toString());
+        const QStringList copiedContacts = m_vault->entry(copied).value("contactIds").toStringList();
+        QCOMPARE(copiedContacts.size(), 1);
+        QVERIFY(copiedContacts.first().startsWith(key + ':'));
+
+        // Flytt fra tilleggsdatabasen til hoveddatabasen.
+        const QString moved = m_vault->copyEntryTo(sharedId, QStringLiteral("main"), true);
+        QVERIFY2(!moved.isEmpty() && !moved.contains(':'), qPrintable(m_vault->errorMessage()));
+        QVERIFY(m_vault->entry(sharedId).isEmpty());
+        QCOMPARE(m_vault->entry(moved).value("title").toString(), QStringLiteral("Felles-konto"));
+        QCOMPARE(m_vault->totalCount(), mainCount + 2);
+
+        // Etter låsing åpnes tilleggsdatabasen automatisk sammen med hoveddatabasen.
+        m_vault->lock();
+        QCOMPARE(m_vault->openSourceCount(), 0);
+        m_vault->unlock(QStringLiteral("pw"));
+        QTRY_VERIFY_WITH_TIMEOUT(m_vault->isUnlocked(), 20000);
+        QTRY_COMPARE_WITH_TIMEOUT(m_vault->openSourceCount(), 2, 20000);
+        QCOMPARE(m_vault->totalCount(), mainCount + 2);
+        QVERIFY(!m_vault->entry(copied).isEmpty());
+
+        // En kryptert kopi tar ikke med passordene til tilleggsdatabasene.
+        QSignalSpy exported(m_vault, &VaultController::exportFinished);
+        const QString copyPath = m_dir.filePath(QStringLiteral("kopi-uten-tilkoblinger.hvelv"));
+        m_vault->exportVault(QUrl::fromLocalFile(copyPath), QStringLiteral("kopipassord1"));
+        QTRY_COMPARE_WITH_TIMEOUT(exported.size(), 1, 20000);
+        QVERIFY(exported.first().at(0).toBool());
+        const auto copy = VaultFile::open(copyPath, "kopipassord1");
+        QCOMPARE(copy.status, VaultFile::Status::Ok);
+        QVERIFY(!copy.data.settings.contains(QStringLiteral("connections")));
+        QVERIFY(!copy.data.toJson().contains("fellespassord1"));
+
+        QTRY_VERIFY(findByName(m_window, "vaultPage"));
+        page = findByName(m_window, "vaultPage");
+        QMetaObject::invokeMethod(page, "openDialog", Q_ARG(QVariant, QVariant(QStringLiteral("databases"))));
+        QTRY_VERIFY(findByName(m_window, "databasesDialog")->property("opened").toBool());
+        snap(QStringLiteral("ui-31-databases-dialog"));
+        QMetaObject::invokeMethod(page, "openDialog", Q_ARG(QVariant, QVariant(QStringLiteral("none"))));
+
+        // Fjernet fra listen: tilbake til én database, filen ligger igjen.
+        QVERIFY(m_vault->removeConnection(key));
+        QCOMPARE(m_vault->openSourceCount(), 1);
+        QCOMPARE(m_vault->totalCount(), mainCount + 1); // den flyttede oppføringen ligger i hoveddatabasen
+        QVERIFY(QFile::exists(path));
+        m_vault->lock();
+        m_vault->unlock(QStringLiteral("pw"));
+        QTRY_VERIFY_WITH_TIMEOUT(m_vault->isUnlocked(), 20000);
+        QCOMPARE(m_vault->sources().size(), 1);
+    }
+
     // Kopier filhvelvet til SQL Server, åpne det derfra, lagre, og opprett en ny tom database.
     void sqlServerFlow()
     {
