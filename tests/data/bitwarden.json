@@ -1,0 +1,10 @@
+{"encrypted":false,
+ "folders":[{"id":"f1","name":"Kunder"}],
+ "items":[
+  {"type":1,"name":"GitHub","folderId":"f1","notes":"n",
+   "login":{"username":"dev","password":"pw","totp":"JBSWY3DPEHPK3PXP",
+            "uris":[{"uri":"https://github.com"},{"uri":"https://api.github.com"}]},
+   "fields":[{"name":"Token","value":"abc","type":1},{"name":"Team","value":"Integrasjon","type":0}]},
+  {"type":2,"name":"Gjenopprettingskoder","notes":"1111 2222"},
+  {"type":3,"name":"Firmakort"}
+ ]}

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<KeePassFile>
+ <Meta><DatabaseName>Jobb</DatabaseName></Meta>
+ <Root>
+  <Group><Name>Jobb</Name>
+   <Group><Name>Kunde A</Name>
+    <Entry>
+     <String><Key>Title</Key><Value>Visma</Value></String>
+     <String><Key>UserName</Key><Value>rudi</Value></String>
+     <String><Key>Password</Key><Value ProtectInMemory="True">hemmelig</Value></String>
+     <String><Key>URL</Key><Value>https://visma.example</Value></String>
+     <String><Key>Notes</Key><Value>Notat</Value></String>
+     <String><Key>otp</Key><Value>otpauth://totp/x?secret=JBSWY3DPEHPK3PXP</Value></String>
+     <String><Key>PIN</Key><Value ProtectInMemory="True">1234</Value></String>
+     <Binary><Key>avtale.pdf</Key><Value Ref="0"/></Binary>
+     <Times><Expires>True</Expires><ExpiryTime>2027-03-01T00:00:00Z</ExpiryTime></Times>
+     <History>
+      <Entry><String><Key>Title</Key><Value>Gammel versjon</Value></String></Entry>
+     </History>
+    </Entry>
+   </Group>
+   <Group><Name>Recycle Bin</Name>
+    <Entry><String><Key>Title</Key><Value>Slettet</Value></String></Entry>
+   </Group>
+   <Entry>
+    <String><Key>Title</Key><Value>Uten gruppe</Value></String>
+    <String><Key>Password</Key><Value>pw</Value></String>
+    <Times><Expires>False</Expires><ExpiryTime>2020-01-01T00:00:00Z</ExpiryTime></Times>
+   </Entry>
+  </Group>
+ </Root>
+</KeePassFile>

@@ -1,0 +1,4 @@
+ZXing-cpp 3.1.1 (Apache-2.0)
+Kilde: https://github.com/zxing-cpp/zxing-cpp/releases/download/v3.1.1/zxing-cpp-3.1.1.tar.gz
+SHA-256 (tar.gz): c3c02c29c0b519de7bd4e25b376e606e87f0761befd1282815642a2246613d14
+Kopiert uendret: core/ og LICENSE. Bygges kun med QR-leser (se rot-CMakeLists.txt i Hvelv).

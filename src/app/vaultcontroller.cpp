@@ -1,0 +1,500 @@
+#include "vaultcontroller.h"
+
+#include "entryfiltermodel.h"
+#include "entrymodel.h"
+#include "entrytypes.h"
+#include "passwordgenerator.h"
+#include "totp.h"
+
+#include <QClipboard>
+#include <QDateTime>
+#include <QDesktopServices>
+#include <QDir>
+#include <QFileInfo>
+#include <QGuiApplication>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QMimeData>
+#include <QStandardPaths>
+#include <QSystemTrayIcon>
+#include <QtConcurrent>
+
+#include <climits>
+
+using namespace hvelv;
+
+namespace {
+
+QString localPath(const QUrl &url)
+{
+    return url.isLocalFile() ? url.toLocalFile() : url.toString();
+}
+
+// Ber Windows om å holde kopierte hemmeligheter utenfor utklippshistorikk (Win+V) og skysynk.
+QMimeData *secretMimeData(const QString &text)
+{
+    auto *mime = new QMimeData;
+    mime->setText(text);
+#ifdef Q_OS_WIN
+    const QByteArray zeroDword(4, '\0');
+    mime->setData(QStringLiteral("application/x-qt-windows-mime;value=\"ExcludeClipboardContentFromMonitorProcessing\""), zeroDword);
+    mime->setData(QStringLiteral("application/x-qt-windows-mime;value=\"CanIncludeInClipboardHistory\""), zeroDword);
+    mime->setData(QStringLiteral("application/x-qt-windows-mime;value=\"CanUploadToCloudClipboard\""), zeroDword);
+#endif
+    return mime;
+}
+
+QString describeExpiry(const Entry &e)
+{
+    const int d = e.daysUntilExpiry();
+    if (d < 0)
+        return QStringLiteral("%1 – utløpt for %2 dager siden").arg(e.title).arg(-d);
+    if (d == 0)
+        return QStringLiteral("%1 – utløper i dag").arg(e.title);
+    return QStringLiteral("%1 – utløper om %2 dager").arg(e.title).arg(d);
+}
+
+} // namespace
+
+VaultController::VaultController(QObject *parent)
+    : QObject(parent)
+    , m_model(new EntryModel(this))
+    , m_filter(new EntryFilterModel(this))
+{
+    m_filter->setSourceModel(m_model);
+
+    const QString saved = m_settings.value(QStringLiteral("vaultPath")).toString();
+    m_path = saved.isEmpty() ? localPath(defaultVaultUrl()) : saved;
+
+    m_idleTimer.setSingleShot(true);
+    connect(&m_idleTimer, &QTimer::timeout, this, [this] {
+        if (isUnlocked()) {
+            lock();
+            emit toast(QStringLiteral("Hvelvet ble låst etter %1 min uten aktivitet.").arg(autoLockMinutes()));
+        }
+    });
+
+    m_clipboardTimer.setSingleShot(true);
+    connect(&m_clipboardTimer, &QTimer::timeout, this, [this] {
+        auto *cb = QGuiApplication::clipboard();
+        if (!m_lastClipboard.isEmpty() && cb->text() == m_lastClipboard)
+            cb->clear();
+        m_lastClipboard.clear();
+    });
+
+    // Sjekker hvert kvarter om dagen har skiftet (utløpsstatus) og om noe skal varsles.
+    m_refreshTimer.setInterval(15 * 60 * 1000);
+    connect(&m_refreshTimer, &QTimer::timeout, this, &VaultController::dailyRefresh);
+
+    qApp->installEventFilter(this);
+    initAutoType();
+}
+
+VaultController::~VaultController()
+{
+    if (!m_lastClipboard.isEmpty() && QGuiApplication::clipboard()->text() == m_lastClipboard)
+        QGuiApplication::clipboard()->clear();
+    m_file.close();
+}
+
+void VaultController::setTrayIcon(QSystemTrayIcon *tray)
+{
+    m_tray = tray;
+    connect(m_tray, &QSystemTrayIcon::messageClicked, this, &VaultController::showAttentionRequested);
+}
+
+bool VaultController::vaultExists() const
+{
+    return QFileInfo::exists(m_path);
+}
+
+int VaultController::autoLockMinutes() const
+{
+    return m_settings.value(QStringLiteral("autoLockMinutes"), 10).toInt();
+}
+
+void VaultController::setAutoLockMinutes(int minutes)
+{
+    m_settings.setValue(QStringLiteral("autoLockMinutes"), qBound(1, minutes, 240));
+    if (isUnlocked())
+        m_idleTimer.start(autoLockMinutes() * 60 * 1000);
+    emit settingsChanged();
+}
+
+int VaultController::clipboardSeconds() const
+{
+    return m_settings.value(QStringLiteral("clipboardSeconds"), 30).toInt();
+}
+
+void VaultController::setClipboardSeconds(int seconds)
+{
+    m_settings.setValue(QStringLiteral("clipboardSeconds"), qBound(5, seconds, 600));
+    emit settingsChanged();
+}
+
+QUrl VaultController::defaultVaultUrl() const
+{
+    const QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    return QUrl::fromLocalFile(QDir(docs).filePath(QStringLiteral("Hvelv/mitt-hvelv.hvelv")));
+}
+
+void VaultController::setBusy(bool busy)
+{
+    if (m_busy != busy) {
+        m_busy = busy;
+        emit busyChanged();
+    }
+}
+
+void VaultController::setError(const QString &message)
+{
+    if (m_error != message) {
+        m_error = message;
+        emit errorMessageChanged();
+    }
+}
+
+void VaultController::clearError()
+{
+    setError({});
+}
+
+void VaultController::setPath(const QString &path, bool remember)
+{
+    m_path = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    if (remember)
+        m_settings.setValue(QStringLiteral("vaultPath"), m_path);
+    emit vaultPathChanged();
+}
+
+void VaultController::useVaultPathForSession(const QString &path)
+{
+    m_sessionOnlyPath = true;
+    setPath(path, false);
+}
+
+void VaultController::selectVaultFile(const QUrl &url)
+{
+    if (isUnlocked())
+        lock();
+    clearError();
+    m_sessionOnlyPath = false;
+    QString path = localPath(url);
+    if (!QFileInfo::exists(path) && !path.endsWith(QLatin1String(".hvelv"), Qt::CaseInsensitive))
+        path += QStringLiteral(".hvelv");
+    setPath(path);
+}
+
+void VaultController::createVault(const QString &masterPassword)
+{
+    if (m_busy)
+        return;
+    const QString path = m_path;
+    if (QFileInfo::exists(path)) {
+        setError(QStringLiteral("Filen finnes allerede. Velg «Åpne» for å låse den opp."));
+        return;
+    }
+    if (isUnlocked())
+        lock();
+    clearError();
+    setBusy(true);
+
+    const QByteArray pw = masterPassword.toUtf8();
+    auto *watcher = new QFutureWatcher<std::pair<VaultFile, VaultFile::Status>>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, path] {
+        auto [file, status] = watcher->result();
+        watcher->deleteLater();
+        setBusy(false);
+        if (status != VaultFile::Status::Ok) {
+            setError(VaultFile::statusText(status));
+            return;
+        }
+        setPath(path, !m_sessionOnlyPath);
+        m_file = file;
+        m_data = {};
+        m_model->setContacts({});
+        m_model->setEntries({});
+        recount();
+        m_idleTimer.start(autoLockMinutes() * 60 * 1000);
+        m_refreshTimer.start();
+        emit unlockedChanged();
+        emit dataChanged();
+        emit toast(QStringLiteral("Nytt hvelv opprettet."));
+    });
+    watcher->setFuture(QtConcurrent::run([path, pw] {
+        VaultFile f = VaultFile::create(path, pw);
+        const auto status = f.save({});
+        return std::make_pair(f, status);
+    }));
+}
+
+void VaultController::unlock(const QString &masterPassword)
+{
+    if (m_busy || isUnlocked())
+        return;
+    clearError();
+    setBusy(true);
+
+    const QByteArray pw = masterPassword.toUtf8();
+    const QString path = m_path;
+    auto *watcher = new QFutureWatcher<VaultFile::OpenResult>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
+        VaultFile::OpenResult r = watcher->result();
+        watcher->deleteLater();
+        setBusy(false);
+        if (r.status != VaultFile::Status::Ok) {
+            setError(VaultFile::statusText(r.status));
+            return;
+        }
+        m_file = r.file;
+        m_data = r.data;
+        m_model->setContacts(m_data.contacts);
+        m_model->setEntries(m_data.entries);
+        recount();
+        emit dataChanged();
+        m_lastRefreshDate = QDate::currentDate();
+        m_idleTimer.start(autoLockMinutes() * 60 * 1000);
+        m_refreshTimer.start();
+        emit unlockedChanged();
+        checkReminders();
+    });
+    watcher->setFuture(QtConcurrent::run([path, pw] { return VaultFile::open(path, pw); }));
+}
+
+void VaultController::lock()
+{
+    if (!isUnlocked())
+        return;
+    m_file.close();
+    m_data = {};
+    m_model->setEntries({});
+    m_model->setContacts({});
+    m_filter->setSearchText({});
+    m_filter->setOwnerFilter({});
+    m_filter->setCustomerFilter({});
+    m_quickFilter->setSearchText({});
+    m_quickFilter->setOnlyIds({});
+    m_autoTypeTarget = 0;
+    m_filter->setFilter(QStringLiteral("all"));
+    m_breachCounts.clear();
+    m_breachesChecked = false;
+    m_idleTimer.stop();
+    m_refreshTimer.stop();
+    if (!m_lastClipboard.isEmpty() && QGuiApplication::clipboard()->text() == m_lastClipboard)
+        QGuiApplication::clipboard()->clear();
+    m_lastClipboard.clear();
+    recount();
+    emit unlockedChanged();
+    emit dataChanged();
+}
+
+void VaultController::changeMasterPassword(const QString &current, const QString &next)
+{
+    if (!isUnlocked() || m_busy)
+        return;
+    clearError();
+    setBusy(true);
+    const QByteArray cur = current.toUtf8();
+    const QByteArray nxt = next.toUtf8();
+    const QString path = m_path;
+    const VaultFile file = m_file;
+    const VaultData data = m_data;
+
+    auto *watcher = new QFutureWatcher<std::pair<VaultFile, VaultFile::Status>>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
+        auto [file, status] = watcher->result();
+        watcher->deleteLater();
+        setBusy(false);
+        if (status != VaultFile::Status::Ok) {
+            setError(status == VaultFile::Status::WrongPassword
+                         ? QStringLiteral("Nåværende hovedpassord er feil.")
+                         : VaultFile::statusText(status));
+            return;
+        }
+        m_file = file;
+        emit masterPasswordChanged();
+        emit toast(QStringLiteral("Hovedpassordet er byttet."));
+    });
+    watcher->setFuture(QtConcurrent::run([path, cur, nxt, file, data] {
+        // Verifiser nåværende passord mot filen på disk før vi bytter.
+        auto check = VaultFile::open(path, cur);
+        if (check.status != VaultFile::Status::Ok)
+            return std::make_pair(file, check.status);
+        VaultFile f = file;
+        const auto status = f.changePassword(nxt, data);
+        return std::make_pair(f, status);
+    }));
+}
+
+bool VaultController::persist()
+{
+    QString err;
+    const auto status = m_file.save(m_data, &err);
+    if (status != VaultFile::Status::Ok) {
+        setError(QStringLiteral("Kunne ikke lagre hvelvet: %1").arg(err.isEmpty() ? VaultFile::statusText(status) : err));
+        return false;
+    }
+    return true;
+}
+
+void VaultController::recount()
+{
+    int soon = 0, expired = 0;
+    for (const auto &e : std::as_const(m_data.entries)) {
+        switch (e.expiryStatus()) {
+        case ExpiryStatus::ExpiringSoon: ++soon; break;
+        case ExpiryStatus::Expired: ++expired; break;
+        default: break;
+        }
+    }
+    m_expiring = soon;
+    m_expired = expired;
+    emit countsChanged();
+}
+
+void VaultController::dailyRefresh()
+{
+    if (!isUnlocked())
+        return;
+    const QDate today = QDate::currentDate();
+    if (today != m_lastRefreshDate) {
+        m_lastRefreshDate = today;
+        m_model->refreshAll();
+        m_filter->invalidate();
+        recount();
+    }
+    checkReminders();
+}
+
+void VaultController::checkReminders()
+{
+    const QString today = QDate::currentDate().toString(Qt::ISODate);
+    QStringList lines;
+    for (const auto &e : std::as_const(m_data.entries)) {
+        const auto status = e.expiryStatus();
+        if (status != ExpiryStatus::ExpiringSoon && status != ExpiryStatus::Expired)
+            continue;
+        if (e.reminderChannel == ReminderChannel::Email)
+            continue; // e-post håndteres av serveren (fase 2)
+        const QString key = e.id + QLatin1Char('|') + today;
+        if (m_notified.contains(key))
+            continue;
+        m_notified.insert(key);
+        lines << describeExpiry(e);
+    }
+    if (lines.isEmpty())
+        return;
+
+    const QString title = lines.size() == 1 ? QStringLiteral("1 konto krever oppmerksomhet")
+                                            : QStringLiteral("%1 kontoer krever oppmerksomhet").arg(lines.size());
+    QStringList shown = lines.mid(0, 4);
+    if (lines.size() > 4)
+        shown << QStringLiteral("… og %1 til").arg(lines.size() - 4);
+    if (m_tray && QSystemTrayIcon::supportsMessages())
+        m_tray->showMessage(title, shown.join(QLatin1Char('\n')), QSystemTrayIcon::Warning, 15000);
+    emit toast(title);
+}
+
+void VaultController::copyToClipboard(const QString &text, bool sensitive)
+{
+    if (text.isEmpty())
+        return;
+    auto *cb = QGuiApplication::clipboard();
+    if (sensitive) {
+        cb->setMimeData(secretMimeData(text));
+        m_lastClipboard = text;
+        m_clipboardTimer.start(clipboardSeconds() * 1000);
+        emit toast(QStringLiteral("Kopiert – tømmes om %1 sekunder.").arg(clipboardSeconds()));
+    } else {
+        cb->setText(text);
+        emit toast(QStringLiteral("Kopiert."));
+    }
+}
+
+void VaultController::copyField(const QString &id, const QString &field)
+{
+    const Entry *e = m_data.entry(id);
+    if (!e)
+        return;
+    if (field == QLatin1String("password"))
+        copyToClipboard(e->password, true);
+    else if (field == QLatin1String("username"))
+        copyToClipboard(e->username, false);
+    else if (field == QLatin1String("totp")) {
+        const auto cfg = totp::parse(e->totpSecret);
+        if (cfg)
+            copyToClipboard(totp::code(*cfg, QDateTime::currentSecsSinceEpoch()), true);
+    } else if (field.startsWith(QLatin1String("fields."))) {
+        const QString key = field.mid(7);
+        bool secret = true;
+        for (const auto &f : entrytypes::type(e->type)[QStringLiteral("fields")].toArray())
+            if (f.toObject()[QStringLiteral("key")].toString() == key)
+                secret = f.toObject()[QStringLiteral("secret")].toBool();
+        copyToClipboard(e->fields.value(key).toString(), secret);
+    } else if (field.startsWith(QLatin1String("custom."))) {
+        const int i = field.mid(7).toInt();
+        if (i >= 0 && i < e->customFields.size())
+            copyToClipboard(e->customFields.at(i).value, e->customFields.at(i).secret);
+    } else if (field.startsWith(QLatin1String("history."))) {
+        const int i = field.mid(8).toInt();
+        if (i >= 0 && i < e->passwordHistory.size())
+            copyToClipboard(e->passwordHistory.at(i).password, true);
+    }
+}
+
+QVariantMap VaultController::totp(const QString &id) const
+{
+    const Entry *e = m_data.entry(id);
+    if (!e)
+        return {{QStringLiteral("valid"), false}};
+    const auto cfg = totp::parse(e->totpSecret);
+    if (!cfg)
+        return {{QStringLiteral("valid"), false}};
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    return {
+        {QStringLiteral("valid"), true},
+        {QStringLiteral("code"), totp::code(*cfg, now)},
+        {QStringLiteral("remaining"), totp::secondsRemaining(*cfg, now)},
+        {QStringLiteral("period"), cfg->period},
+    };
+}
+
+bool VaultController::isValidTotp(const QString &secret) const
+{
+    return secret.trimmed().isEmpty() || totp::parse(secret).has_value();
+}
+
+QString VaultController::generatePassword(int length, bool lower, bool upper, bool digits,
+                                          bool symbols, bool avoidAmbiguous) const
+{
+    PasswordOptions o;
+    o.length = qBound(4, length, 128);
+    o.lower = lower;
+    o.upper = upper;
+    o.digits = digits;
+    o.symbols = symbols;
+    o.avoidAmbiguous = avoidAmbiguous;
+    return hvelv::generatePassword(o);
+}
+
+void VaultController::openUrl(const QString &url) const
+{
+    QUrl u = QUrl::fromUserInput(url.trimmed());
+    if (u.isValid() && (u.scheme() == QLatin1String("http") || u.scheme() == QLatin1String("https")))
+        QDesktopServices::openUrl(u);
+}
+
+bool VaultController::eventFilter(QObject *watched, QEvent *event)
+{
+    switch (event->type()) {
+    case QEvent::KeyPress:
+    case QEvent::MouseButtonPress:
+    case QEvent::Wheel:
+        if (isUnlocked())
+            m_idleTimer.start(autoLockMinutes() * 60 * 1000);
+        break;
+    default:
+        break;
+    }
+    return QObject::eventFilter(watched, event);
+}

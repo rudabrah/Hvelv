@@ -1,0 +1,33 @@
+# Bygg (build.bat og Qt Creator)
+build/
+build-*/
+out/
+
+# IDE-filer
+*.user
+*.user.*
+CMakeUserPresets.json
+.qmlls.ini
+.qtcreator/
+.vs/
+.vscode/
+
+# Hvelv-data – skal ALDRI i git
+*.hvelv
+*.hvelv.bak
+*.bak
+
+# Ukrypterte eksporter (CSV inneholder passord i klartekst) og kalenderfiler
+*.csv
+!tests/data/*.csv
+*.ics
+
+# Sertifikater og nøkler (testsertifikater lages i minnet av testene)
+*.pfx
+*.p12
+*.key
+*.pem
+
+# Diverse
+*.log
+Thumbs.db
