@@ -5,6 +5,7 @@
 #include "certificateinfo.h"
 #include "entryfiltermodel.h"
 #include "qrscanner.h"
+#include "sqlstore.h"
 #include "vaultcontroller.h"
 #include "vaultfile.h"
 
@@ -15,6 +16,9 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+#include <QScopeGuard>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QUuid>
 #include <QtQml/qqmlextensionplugin.h>
@@ -102,6 +106,25 @@ void messageHandler(QtMsgType type, const QMessageLogContext &ctx, const QString
 QObject *findByName(QObject *root, const char *name)
 {
     return root->findChild<QObject *>(QString::fromLatin1(name));
+}
+
+// Sletter testdatabaser (bare HvelvTest_*) etter SQL-testen.
+void dropTestDatabases(const QString &server, const QStringList &names)
+{
+    const QString connection = QStringLiteral("ui-cleanup");
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QODBC"), connection);
+        db.setDatabaseName(SqlLocation{server, QStringLiteral("master")}.odbcConnectionString());
+        if (db.open()) {
+            QSqlQuery q(db);
+            for (const auto &name : names)
+                if (name.startsWith(QLatin1String("HvelvTest_")))
+                    q.exec(QStringLiteral("IF DB_ID('%1') IS NOT NULL BEGIN ALTER DATABASE [%1] SET SINGLE_USER "
+                                          "WITH ROLLBACK IMMEDIATE; DROP DATABASE [%1]; END").arg(name));
+        }
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(connection);
 }
 
 } // namespace
@@ -559,6 +582,83 @@ private slots:
         blank.fill(Qt::white);
         QVERIFY(qrscanner::decode(blank).isEmpty());
         QVERIFY(!m_vault->scanQrFromFile(QUrl::fromLocalFile(QFINDTESTDATA("data/keepass.xml"))).value("ok").toBool());
+    }
+
+    // Kopier filhvelvet til SQL Server, åpne det derfra, lagre, og opprett en ny tom database.
+    void sqlServerFlow()
+    {
+        const QString server = qEnvironmentVariable("HVELV_SQL_SERVER");
+        if (server.isEmpty())
+            QSKIP("Sett HVELV_SQL_SERVER (f.eks. localhost) for å teste SQL Server.");
+        const QString db = QStringLiteral("HvelvTest_ui_") + QUuid::createUuid().toString(QUuid::Id128).left(8);
+        const QString db2 = db + QStringLiteral("_ny");
+        const auto cleanup = qScopeGuard([&] { dropTestDatabases(server, {db, db2}); });
+
+        QVERIFY(m_vault->isUnlocked());
+        QVERIFY(!m_vault->vaultIsSql());
+        const int count = m_vault->totalCount();
+        QSignalSpy exported(m_vault, &VaultController::exportFinished);
+        m_vault->exportToSql(server, db, QStringLiteral("sqlpassord12"));
+        QTRY_COMPARE_WITH_TIMEOUT(exported.size(), 1, 30000);
+        QVERIFY2(exported.first().at(0).toBool(), qPrintable(exported.first().at(1).toString()));
+
+        // Når databasen velges, låses hvelvet og opplåsingssiden viser databasen.
+        m_vault->selectSqlDatabase(server, db, false);
+        QVERIFY(!m_vault->isUnlocked());
+        QVERIFY(m_vault->vaultIsSql());
+        QVERIFY(m_vault->vaultExists());
+        QVERIFY(m_vault->vaultDisplayName().contains(db));
+        QCOMPARE(m_vault->sqlLocation().value("database").toString(), db);
+        QTRY_VERIFY(!findByName(m_window, "vaultPage"));
+        snap(QStringLiteral("ui-20-sql-unlock"));
+
+        // Dialogen fylles ut med databasen som er valgt.
+        QObject *dialog = findByName(m_window, "sqlDatabaseDialog");
+        QVERIFY(dialog);
+        QMetaObject::invokeMethod(dialog, "open");
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QCOMPARE(findByName(m_window, "sqlDatabaseField")->property("text").toString(), db);
+        QCOMPARE(findByName(m_window, "sqlServerField")->property("text").toString(), server);
+        QVERIFY(dialog->property("valid").toBool());
+        snap(QStringLiteral("ui-22-sql-dialog"));
+        QMetaObject::invokeMethod(dialog, "close");
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+
+        m_vault->unlock(QStringLiteral("feil"));
+        QTRY_VERIFY_WITH_TIMEOUT(!m_vault->isBusy(), 20000);
+        QVERIFY(!m_vault->isUnlocked());
+        QVERIFY(!m_vault->errorMessage().isEmpty());
+
+        m_vault->unlock(QStringLiteral("sqlpassord12"));
+        QTRY_VERIFY_WITH_TIMEOUT(m_vault->isUnlocked(), 20000);
+        QVERIFY2(m_vault->errorMessage().isEmpty(), qPrintable(m_vault->errorMessage()));
+        QCOMPARE(m_vault->totalCount(), count);
+        QCOMPARE(m_vault->entry(m_soonId).value("contacts").toList().size(), 1);
+
+        QVariantMap m = m_vault->entry(m_soonId);
+        m["notes"] = QStringLiteral("Lagret i SQL Server");
+        QCOMPARE(m_vault->saveEntry(m), m_soonId);
+        QVERIFY(m_vault->deleteEntry(m_expiredId));
+        m_vault->lock();
+        m_vault->unlock(QStringLiteral("sqlpassord12"));
+        QTRY_VERIFY_WITH_TIMEOUT(m_vault->isUnlocked(), 20000);
+        QCOMPARE(m_vault->totalCount(), count - 1);
+        QCOMPARE(m_vault->entry(m_soonId).value("notes").toString(), QStringLiteral("Lagret i SQL Server"));
+        snap(QStringLiteral("ui-21-sql-list"));
+
+        // Ny, tom database
+        m_vault->selectSqlDatabase(server, db2, true);
+        QVERIFY(!m_vault->vaultExists());
+        m_vault->createVault(QStringLiteral("nytt sqlpassord"));
+        QTRY_VERIFY_WITH_TIMEOUT(m_vault->isUnlocked(), 20000);
+        QVERIFY(m_vault->vaultExists());
+        QCOMPARE(m_vault->totalCount(), 0);
+
+        // Ugyldig databasenavn avvises uten å røre det som er åpent.
+        m_vault->selectSqlDatabase(server, QStringLiteral("x];DROP"), false);
+        QVERIFY(m_vault->isUnlocked());
+        QVERIFY(!m_vault->errorMessage().isEmpty());
+        m_vault->clearError();
     }
 
     void lockClearsEverything()

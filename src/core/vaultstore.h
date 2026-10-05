@@ -33,8 +33,8 @@ struct ChangeSet
 class VaultStore
 {
 public:
-    enum class Kind { File };
-    enum class Error { None, WrongPassword, Io, BadFormat, UnsupportedVersion, Corrupt, Busy };
+    enum class Kind { File, SqlServer };
+    enum class Error { None, WrongPassword, Io, BadFormat, UnsupportedVersion, Corrupt, Conflict };
 
     struct Result
     {

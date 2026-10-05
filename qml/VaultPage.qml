@@ -492,10 +492,10 @@ FocusScope {
                 Layout.fillWidth: true
             }
 
-            SectionHeader { text: "Fil"; Layout.columnSpan: 2 }
-            Label { text: "Hvelvfil"; Layout.topMargin: 8 }
+            SectionHeader { text: Vault.vaultIsSql ? "Database" : "Fil"; Layout.columnSpan: 2 }
+            Label { text: Vault.vaultIsSql ? "SQL Server" : "Hvelvfil"; Layout.topMargin: 8 }
             Label {
-                text: Vault.vaultPath
+                text: Vault.vaultDisplayName
                 color: palette.placeholderText
                 elide: Text.ElideMiddle
                 Layout.maximumWidth: 320

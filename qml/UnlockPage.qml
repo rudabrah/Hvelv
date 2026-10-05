@@ -49,19 +49,21 @@ FocusScope {
         }
 
         Label {
-            text: page.creating ? "Opprett et nytt, kryptert hvelv" : "Lås opp hvelvet"
+            text: Vault.vaultIsSql
+                  ? (page.creating ? "Opprett en ny, kryptert database i SQL Server" : "Lås opp databasen")
+                  : (page.creating ? "Opprett et nytt, kryptert hvelv" : "Lås opp hvelvet")
             font.pixelSize: 16
             Layout.alignment: Qt.AlignHCenter
         }
 
         Label {
-            text: Vault.vaultPath
+            text: Vault.vaultDisplayName
             elide: Text.ElideMiddle
             color: palette.placeholderText
             font.pixelSize: 12
             horizontalAlignment: Text.AlignHCenter
             Layout.fillWidth: true
-            ToolTip.text: Vault.vaultPath
+            ToolTip.text: Vault.vaultDisplayName
             ToolTip.visible: pathHover.hovered
             HoverHandler { id: pathHover }
         }
@@ -110,7 +112,7 @@ FocusScope {
 
         Button {
             text: Vault.busy ? (page.creating ? "Oppretter…" : "Låser opp…")
-                             : (page.creating ? "Opprett hvelv" : "Lås opp")
+                             : (page.creating ? (Vault.vaultIsSql ? "Opprett database" : "Opprett hvelv") : "Lås opp")
             highlighted: true
             enabled: page.canSubmit
             Layout.fillWidth: true
@@ -140,7 +142,19 @@ FocusScope {
                 enabled: !Vault.busy
                 onClicked: saveDialog.open()
             }
+            Button {
+                text: "SQL Server…"
+                flat: true
+                enabled: !Vault.busy
+                onClicked: sqlDialog.open()
+            }
         }
+    }
+
+    SqlDatabaseDialog {
+        id: sqlDialog
+        objectName: "sqlDatabaseDialog"
+        anchors.centerIn: parent
     }
 
     FileDialog {

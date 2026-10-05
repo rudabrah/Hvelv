@@ -29,6 +29,8 @@ class VaultController : public QObject
 
     Q_PROPERTY(QString vaultPath READ vaultPath NOTIFY vaultPathChanged)
     Q_PROPERTY(bool vaultExists READ vaultExists NOTIFY vaultPathChanged)
+    Q_PROPERTY(bool vaultIsSql READ vaultIsSql NOTIFY vaultPathChanged)
+    Q_PROPERTY(QString vaultDisplayName READ vaultDisplayName NOTIFY vaultPathChanged)
     Q_PROPERTY(bool unlocked READ isUnlocked NOTIFY unlockedChanged)
     Q_PROPERTY(bool busy READ isBusy NOTIFY busyChanged)
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
@@ -65,6 +67,8 @@ public:
 
     QString vaultPath() const { return m_path; }
     bool vaultExists() const;
+    bool vaultIsSql() const;
+    QString vaultDisplayName() const;
     bool isUnlocked() const { return m_store != nullptr; }
     bool isBusy() const { return m_busy; }
     QString errorMessage() const { return m_error; }
@@ -96,6 +100,10 @@ public:
     // Hvelvfil
     Q_INVOKABLE void selectVaultFile(const QUrl &url);
     Q_INVOKABLE void createVault(const QString &masterPassword); // på vaultPath
+    // SQL Server: velger databasen (create = opprettes ved createVault i stedet for å åpnes).
+    Q_INVOKABLE void selectSqlDatabase(const QString &server, const QString &database, bool create);
+    Q_INVOKABLE QVariantMap sqlLocation() const; // {server, database} for gjeldende eller forslag
+    Q_INVOKABLE bool isValidDatabaseName(const QString &name) const;
     Q_INVOKABLE void unlock(const QString &masterPassword);
     Q_INVOKABLE void lock();
     Q_INVOKABLE void changeMasterPassword(const QString &current, const QString &next);
@@ -131,6 +139,8 @@ public:
     // Eksport
     Q_INVOKABLE bool exportCsv(const QUrl &target);
     Q_INVOKABLE void exportVault(const QUrl &target, const QString &password); // -> exportFinished
+    // Ny SQL Server-database med alt innhold, låst med password. -> exportFinished
+    Q_INVOKABLE void exportToSql(const QString &server, const QString &database, const QString &password);
 
     // Auto-Type: målvinduet huskes når hurtigtasten trykkes.
     Q_INVOKABLE void requestQuickSearch();
@@ -208,6 +218,7 @@ private:
     QSettings m_settings;
     QString m_path;
     bool m_sessionOnlyPath = false;
+    bool m_sqlCreate = false; // valgt SQL-database skal opprettes, ikke åpnes
     std::shared_ptr<hvelv::VaultStore> m_store; // null = låst
     EntryModel *m_model;
     EntryFilterModel *m_filter;

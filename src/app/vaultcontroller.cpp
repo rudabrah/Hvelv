@@ -5,6 +5,7 @@
 #include "entrytypes.h"
 #include "filestore.h"
 #include "passwordgenerator.h"
+#include "sqlstore.h"
 #include "totp.h"
 
 #include <QClipboard>
@@ -53,6 +54,35 @@ QString describeExpiry(const Entry &e)
     if (d == 0)
         return QStringLiteral("%1 – utløper i dag").arg(e.title);
     return QStringLiteral("%1 – utløper om %2 dager").arg(e.title).arg(d);
+}
+
+// Åpner eller oppretter hvelvet på path: fil eller "sqlserver://server/database".
+struct Opened
+{
+    VaultStore::Result result;
+    std::shared_ptr<VaultStore> store;
+    QStringList rejected; // endret utenom Hvelv (bare SQL)
+};
+
+Opened openOrCreate(const QString &path, const QByteArray &password, bool create)
+{
+    Opened o;
+    if (SqlLocation::isSqlLocation(path)) {
+        const auto loc = SqlLocation::parse(path);
+        if (!loc) {
+            o.result = {VaultStore::Error::BadFormat, QStringLiteral("Ugyldig SQL Server-adresse: %1").arg(path)};
+            return o;
+        }
+        auto r = create ? SqlStore::create(*loc, password) : SqlStore::open(*loc, password);
+        o.result = r.result;
+        o.store = std::move(r.store);
+        o.rejected = r.rejected;
+    } else {
+        auto r = create ? FileStore::create(path, password) : FileStore::open(path, password);
+        o.result = r.result;
+        o.store = std::move(r.store);
+    }
+    return o;
 }
 
 } // namespace
@@ -106,7 +136,20 @@ void VaultController::setTrayIcon(QSystemTrayIcon *tray)
 
 bool VaultController::vaultExists() const
 {
-    return QFileInfo::exists(m_path);
+    // En SQL-database kan ikke sjekkes uten å koble til; brukeren har sagt om den skal opprettes.
+    return vaultIsSql() ? !m_sqlCreate : QFileInfo::exists(m_path);
+}
+
+bool VaultController::vaultIsSql() const
+{
+    return SqlLocation::isSqlLocation(m_path);
+}
+
+QString VaultController::vaultDisplayName() const
+{
+    if (const auto loc = SqlLocation::parse(m_path))
+        return QStringLiteral("%1 på %2 (SQL Server)").arg(loc->database, loc->server);
+    return m_path;
 }
 
 int VaultController::autoLockMinutes() const
@@ -162,7 +205,13 @@ void VaultController::clearError()
 
 void VaultController::setPath(const QString &path, bool remember)
 {
-    m_path = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    if (SqlLocation::isSqlLocation(path)) {
+        const auto loc = SqlLocation::parse(path);
+        m_path = loc ? loc->toString() : path;
+    } else {
+        m_path = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+        m_sqlCreate = false;
+    }
     if (remember)
         m_settings.setValue(QStringLiteral("vaultPath"), m_path);
     emit vaultPathChanged();
@@ -186,12 +235,39 @@ void VaultController::selectVaultFile(const QUrl &url)
     setPath(path);
 }
 
+void VaultController::selectSqlDatabase(const QString &server, const QString &database, bool create)
+{
+    const SqlLocation loc{server.trimmed(), database.trimmed()};
+    if (loc.server.isEmpty() || !SqlLocation::isValidDatabaseName(loc.database)) {
+        setError(QStringLiteral("Oppgi server og et gyldig databasenavn (bokstaver, tall, _ og -)."));
+        return;
+    }
+    if (isUnlocked())
+        lock();
+    clearError();
+    m_sessionOnlyPath = false;
+    m_sqlCreate = create;
+    setPath(loc.toString());
+}
+
+QVariantMap VaultController::sqlLocation() const
+{
+    const auto loc = SqlLocation::parse(m_path);
+    return {{QStringLiteral("server"), loc ? loc->server : QStringLiteral("localhost")},
+            {QStringLiteral("database"), loc ? loc->database : QStringLiteral("HvelvPersonlig")}};
+}
+
+bool VaultController::isValidDatabaseName(const QString &name) const
+{
+    return SqlLocation::isValidDatabaseName(name);
+}
+
 void VaultController::createVault(const QString &masterPassword)
 {
     if (m_busy)
         return;
     const QString path = m_path;
-    if (QFileInfo::exists(path)) {
+    if (!vaultIsSql() && QFileInfo::exists(path)) {
         setError(QStringLiteral("Filen finnes allerede. Velg «Åpne» for å låse den opp."));
         return;
     }
@@ -201,15 +277,16 @@ void VaultController::createVault(const QString &masterPassword)
     setBusy(true);
 
     const QByteArray pw = masterPassword.toUtf8();
-    auto *watcher = new QFutureWatcher<FileStore::OpenResult>(this);
+    auto *watcher = new QFutureWatcher<Opened>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, path] {
-        FileStore::OpenResult r = watcher->result();
+        Opened r = watcher->result();
         watcher->deleteLater();
         setBusy(false);
         if (!r.result.ok()) {
             setError(r.result.message);
             return;
         }
+        m_sqlCreate = false;
         setPath(path, !m_sessionOnlyPath);
         m_store = std::move(r.store);
         m_model->setContacts({});
@@ -221,7 +298,7 @@ void VaultController::createVault(const QString &masterPassword)
         emit dataChanged();
         emit toast(QStringLiteral("Nytt hvelv opprettet."));
     });
-    watcher->setFuture(QtConcurrent::run([path, pw] { return FileStore::create(path, pw); }));
+    watcher->setFuture(QtConcurrent::run([path, pw] { return openOrCreate(path, pw, true); }));
 }
 
 void VaultController::unlock(const QString &masterPassword)
@@ -233,9 +310,9 @@ void VaultController::unlock(const QString &masterPassword)
 
     const QByteArray pw = masterPassword.toUtf8();
     const QString path = m_path;
-    auto *watcher = new QFutureWatcher<FileStore::OpenResult>(this);
+    auto *watcher = new QFutureWatcher<Opened>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
-        FileStore::OpenResult r = watcher->result();
+        Opened r = watcher->result();
         watcher->deleteLater();
         setBusy(false);
         if (!r.result.ok()) {
@@ -252,8 +329,13 @@ void VaultController::unlock(const QString &masterPassword)
         m_refreshTimer.start();
         emit unlockedChanged();
         checkReminders();
+        if (!r.rejected.isEmpty())
+            setError(QStringLiteral("%1 ble ikke lastet fordi de er endret utenom Hvelv: %2")
+                         .arg(r.rejected.size() == 1 ? QStringLiteral("1 oppføring")
+                                                     : QStringLiteral("%1 oppføringer").arg(r.rejected.size()),
+                              r.rejected.join(QStringLiteral(", "))));
     });
-    watcher->setFuture(QtConcurrent::run([path, pw] { return FileStore::open(path, pw); }));
+    watcher->setFuture(QtConcurrent::run([path, pw] { return openOrCreate(path, pw, false); }));
 }
 
 void VaultController::lock()

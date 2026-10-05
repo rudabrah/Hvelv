@@ -1,6 +1,6 @@
 # Fase 2 – personlig og felles database i SQL Server
 
-Status: **2a ferdig**, neste er 2b. Sist oppdatert 2026-10-05.
+Status: **2a og 2b ferdige**, neste er 2c. Sist oppdatert 2026-10-05.
 
 ## Krav
 
@@ -124,7 +124,7 @@ Leveres som SQL-skript til drift.
 | Steg | Innhold | Ferdig når |
 |---|---|---|
 | **2a** ✅ | `VaultStore`-abstraksjon (`src/core/vaultstore.h`); dagens filhvelv blir `FileStore`. Kontrolleren lagrer via `ChangeSet` (alt eller ingenting). | Ingen synlig endring, alle tester grønne. |
-| **2b** | Skjema + prosedyrer (SQL-skript med versjonering), `SqlStore`, personlig database i SQL Server, migrering fra `.hvelv`. | Kan opprette, låse opp og bruke personlig database i SQL Server; tester mot lokal instans. |
+| **2b** ✅ | Skjema + prosedyrer ([`sql/v1.sql`](../sql/v1.sql)), `SqlStore` (`src/core/sqlstore.h`), personlig database i SQL Server («SQL Server…» på opplåsingssiden), kopi fra `.hvelv` via «Eksporter». URL er foreløpig kryptert (åpent spørsmål 1). | Kan opprette, låse opp og bruke personlig database i SQL Server; tester mot lokal instans. |
 | **2c** | Flere tilkoblinger: innstillinger, sidepanel, søk på tvers, «Lagre i …», flytt/kopier. | Personlig fil/SQL og en annen database åpne samtidig. |
 | **2d** | Felles database: registrering, godkjenning med fingeravtrykk, nøkkelinnpakning, `hvelv_user`-rollen, revisjonslogg, konflikthåndtering, synk. | To testbrukere deler oppføringer; konflikt og tukling oppdages. |
 | **2e** | E-post via SQL Agent + Database Mail; avgang med nøkkelbytte og fornyelsesliste. | Påminnelse sendes; tidligere bruker kan ikke lese nye data. |

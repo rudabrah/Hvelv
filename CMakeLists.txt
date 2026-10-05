@@ -5,7 +5,7 @@ project(Hvelv VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Qml Quick QuickControls2 Concurrent Network Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Qml Quick QuickControls2 Concurrent Network Sql Test)
 
 qt_standard_project_setup(REQUIRES 6.8)
 
@@ -26,11 +26,14 @@ add_library(hvelv_core STATIC
     src/core/vaultfile.h     src/core/vaultfile.cpp
     src/core/vaultstore.h    src/core/vaultstore.cpp
     src/core/filestore.h     src/core/filestore.cpp
+    src/core/sqlstore.h      src/core/sqlstore.cpp
     src/core/totp.h          src/core/totp.cpp
     src/core/passwordgenerator.h src/core/passwordgenerator.cpp
 )
 target_include_directories(hvelv_core PUBLIC src/core)
-target_link_libraries(hvelv_core PUBLIC Qt6::Core PRIVATE monocypher)
+target_link_libraries(hvelv_core PUBLIC Qt6::Core Qt6::Sql PRIVATE monocypher)
+# Databaseskjemaet bygges inn i programmet (lest som :/sql/v1.sql).
+qt_add_resources(hvelv_core "hvelv_sql" PREFIX "/" FILES sql/v1.sql)
 
 # --- ZXing-cpp (vendret, se third_party/zxing-cpp/VERSION.txt): bare QR-leser ---
 set(ZXING_READERS ON)
@@ -86,6 +89,7 @@ if(HVELV_BUILD_APP)
             qml/HealthDialog.qml
             qml/AppDialog.qml
             qml/QuickSearchWindow.qml
+            qml/SqlDatabaseDialog.qml
     )
     target_include_directories(hvelv_ui PUBLIC src/app)
     target_link_libraries(hvelv_ui PUBLIC
@@ -120,6 +124,7 @@ if(HVELV_BUILD_APP)
             COMMAND "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS}/windeployqt.exe"
                     --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/qml"
                     --no-translations --no-compiler-runtime --no-system-d3d-compiler
+                    --exclude-plugins qsqlite,qsqlpsql,qsqlmimer
                     "$<TARGET_FILE:hvelv>"
             COMMENT "windeployqt: kopierer Qt-avhengigheter"
             VERBATIM)
@@ -145,3 +150,8 @@ add_test(NAME hvelv_tests COMMAND hvelv_tests)
 qt_add_executable(hvelv_import_tests tests/tst_import.cpp)
 target_link_libraries(hvelv_import_tests PRIVATE hvelv_core Qt6::Test)
 add_test(NAME hvelv_import_tests COMMAND hvelv_import_tests)
+
+# SQL Server-tester: hoppes over uten HVELV_SQL_SERVER (f.eks. localhost).
+qt_add_executable(hvelv_sql_tests tests/tst_sql.cpp)
+target_link_libraries(hvelv_sql_tests PRIVATE hvelv_core Qt6::Test)
+add_test(NAME hvelv_sql_tests COMMAND hvelv_sql_tests)

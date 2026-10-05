@@ -4,10 +4,14 @@ Passordhvelv for IT-folk som jobber mot mange tredjepartssystemer. I tillegg til
 lagres kontaktperson hos tredjepart, intern ansvarlig, 2FA-plattform med innebygde TOTP-koder og
 utløpsdato for brukeren, med påminnelser.
 
-**Status:** fase 1.5 – lokal desktop-app (Qt 6.8 / QML / C++20). Fase 2 legger til felles server.
+**Status:** fase 2 pågår – desktop-app (Qt 6.8 / QML / C++20) med hvelvet i en kryptert fil eller i
+SQL Server. Felles database for hele teamet kommer senere i fase 2 ([plan](docs/fase2.md)).
 
 ## Funksjoner
 
+- **Lagring:** kryptert `.hvelv`-fil, eller en database i SQL Server (Windows-pålogging). I SQL Server
+  ligger metadata (tittel, kunde, system, miljø, utløp) lesbart for rapporter i SSMS, mens alle
+  hemmeligheter krypteres i appen. Et filhvelv kan kopieres til SQL Server fra «Eksporter».
 - **Oppføringstyper med maler:** pålogging, API/app-registrering, sertifikat, database, server og
   notat. Hver type har egne felt, og malene (f.eks. Entra ID-appregistrering) fyller inn en
   fornyelsesrutine.
@@ -23,7 +27,7 @@ utløpsdato for brukeren, med påminnelser.
 - **Import:** KeePass/KeePassXC XML, Bitwarden JSON, CSV fra Bitwarden, 1Password, KeePassXC og
   Chrome/Edge, generell CSV og andre `.hvelv`-filer. Duplikater hoppes over, og kunde/tagg kan
   settes på alt som importeres.
-- **Eksport:** kryptert kopi (`.hvelv`) eller CSV (ukryptert, med advarsel).
+- **Eksport:** kryptert kopi (`.hvelv`), kopi i SQL Server eller CSV (ukryptert, med advarsel).
 - **Passordhelse:** svake, gjenbrukte og gamle passord, sjekk mot Have I Been Pwned
   (k-anonymitet – bare de 5 første tegnene av SHA-1-hashen sendes) og TLS-sjekk av sertifikatutløp.
 - **Auto-Type og hurtigsøk:** globale hurtigtaster, som kan endres i innstillingene:
@@ -50,7 +54,11 @@ build.bat Debug
 Appen havner i `build\Release\app\Hvelv.exe`, ferdig klargjort med `windeployqt`, slik at mappen
 kan kopieres og kjøres på andre maskiner.
 
-`Hvelv.exe sti\til\fil.hvelv` åpner en bestemt hvelvfil uten å endre standardvalget.
+`Hvelv.exe sti\til\fil.hvelv` åpner en bestemt hvelvfil uten å endre standardvalget
+(`Hvelv.exe sqlserver://localhost/HvelvPersonlig` gjør det samme for en SQL Server-database).
+
+SQL Server krever «ODBC Driver 17/18 for SQL Server». Databaseskjemaet ligger i [`sql/v1.sql`](sql/v1.sql)
+og legges inn automatisk når en database opprettes fra appen.
 
 Ikonet (`assets/`) lages med `tools\make_icon.bat`.
 
@@ -61,11 +69,14 @@ Ikonet (`assets/`) lages med `tools\make_icon.bat`.
 | `hvelv_tests`        | krypto, tukling, filformat og migrering, TOTP (RFC 6238-vektorer), kalender, helse, Auto-Type-parser |
 | `hvelv_import_tests` | import/eksport og sammenslåing                                       |
 | `hvelv_ui_tests`     | offscreen UI-tester av dialoger og flyt; bruker ingen ekte tastatur, mus eller vinduer |
+| `hvelv_sql_tests`    | SQL Server-lagring: rundtur, klartekstsjekk, tukling, konflikter, rollback, passordbytte |
 
 Miljøvariabler:
 
 - `HVELV_UI_SNAPSHOTS=<mappe>` lagrer skjermbilder fra UI-testene.
 - `HVELV_NETWORK_TESTS=1` kjører også live-tester mot Have I Been Pwned og TLS.
+- `HVELV_SQL_SERVER=localhost` kjører SQL Server-testene (ellers hoppes de over). Testene lager og
+  sletter bare databaser som heter `HvelvTest_*`.
 
 Ikke dekket av automatiske tester, så de må prøves manuelt: Auto-Type (ekte tastetrykk), QR fra
 skjermen og hvordan dialogene ser ut med ekte grafikkdriver.
@@ -82,39 +93,44 @@ skjermen og hvordan dialogene ser ut med ekte grafikkdriver.
   enorme minneallokeringer.
 - **Lagring:** atomisk skriving (`QSaveFile`), forrige versjon beholdes som `.bak`. Eldre filer
   (innholdsformat 1) oppgraderes automatisk ved åpning.
+- **SQL Server:** samme nøkkelhierarki, men hver oppføring, kontakt og hvert vedlegg krypteres for
+  seg. Klartekstkolonnene er bundet til det krypterte innholdet som AD, så en tittel eller kunde som
+  endres direkte i databasen gjør at oppføringen avvises med en advarsel. Appen bruker bare lagrede
+  prosedyrer i skjemaet `hv`, alle endringer skjer i én transaksjon, og `rowversion` oppdager
+  samtidige endringer fra et annet sted.
 - **Runtime:** automatisk låsing ved inaktivitet, utklippstavlen tømmes etter et valgfritt antall
   sekunder, kopierte hemmeligheter holdes utenfor Windows utklippshistorikk/skysynk, Argon2 kjører
   utenfor GUI-tråden.
 - **Auto-Type:** venter til modifikatortastene er sluppet, og avbryter hvis et annet vindu får
   fokus underveis.
-- **Nettverk:** bare HIBP- og TLS-sjekkene bruker nett, og bare når brukeren starter dem. Ingen
-  hemmeligheter forlater maskinen.
+- **Nettverk:** utenom tilkoblingen til SQL Server bruker bare HIBP- og TLS-sjekkene nett, og bare
+  når brukeren starter dem. Ingen hemmeligheter forlater maskinen ukryptert.
 - **Kjent begrensning:** dekrypterte verdier ligger i vanlige `QString`-er mens hvelvet er åpent og
   kan ikke garantert nullstilles fra minnet.
 
 Filformatet er beskrevet i [`src/core/vaultfile.h`](src/core/vaultfile.h), innholdsformatet i
-[`src/core/vaultdata.h`](src/core/vaultdata.h).
+[`src/core/vaultdata.h`](src/core/vaultdata.h) og SQL-lagringen i [`src/core/sqlstore.h`](src/core/sqlstore.h).
 
 ## Struktur
 
 ```
-src/core/     ingen GUI: kryptografi, filformat, datamodell og typer, TOTP, passordgenerator,
-              import/eksport, kalender (.ics), passordhelse, Auto-Type-sekvenser
+src/core/     ingen GUI: kryptografi, lagring (VaultStore: FileStore og SqlStore), datamodell og
+              typer, TOTP, passordgenerator, import/eksport, kalender (.ics), passordhelse,
+              Auto-Type-sekvenser
 src/app/      VaultController (QML-singleton «Vault», delt i vaultcontroller_*.cpp), listemodeller,
               Windows-spesifikt: globale hurtigtaster, Auto-Type (SendInput), sertifikater
               (CryptoAPI), QR-skanning, nettverkssjekker; main.cpp
 qml/          grensesnittet (AppDialog er felles base for alle dialoger)
-tests/        tst_core, tst_import, tst_ui + testdata i tests/data
+sql/          databaseskjema for SQL Server (bygges inn i appen)
+docs/         plan for fase 2
+tests/        tst_core, tst_import, tst_ui, tst_sql + testdata i tests/data
 third_party/  Monocypher 4.0.3, ZXing-cpp 3.1.1 (bare QR-leser)
 tools/        ikongenerator
 assets/       ikoner og Windows-ressursfil
 ```
 
-## Fase 2 – felles server (plan)
+## Fase 2 – personlig og felles database
 
-- Server (f.eks. Python/FastAPI + PostgreSQL) som bare lagrer krypterte blobs.
-- Deling: hver bruker får et X25519-nøkkelpar; delte samlinger har egen nøkkel som pakkes inn til
-  hvert medlem. Serveren ser aldri klartekst.
-- E-postvarsler: utløpsdato og mottaker lagres som eksplisitt ukryptert metadata (valgfritt per
-  oppføring), slik at serveren vet når den skal sende. Brukeren velger e-post eller varsel i appen.
-- Appen kan ha lokalt hvelv og felles hvelv åpne samtidig.
+Se [docs/fase2.md](docs/fase2.md). Kort fortalt: hver bruker har sin personlige database, og alle
+kobler seg i tillegg til én felles database i SQL Server, der alle ser alt. Appen kan ha flere
+databaser åpne samtidig. Steg 2a (lagringsabstraksjon) og 2b (personlig database i SQL Server) er ferdige.

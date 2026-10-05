@@ -4,6 +4,7 @@
 
 #include "calendar.h"
 #include "entrymodel.h"
+#include "sqlstore.h"
 #include "vaultfile.h"
 
 #include <QFile>
@@ -65,7 +66,7 @@ void VaultController::previewVaultImport(const QUrl &file, const QString &passwo
     if (m_busy)
         return;
     const QString path = localPath(file);
-    if (QFileInfo(path).canonicalFilePath() == QFileInfo(m_path).canonicalFilePath()) {
+    if (!vaultIsSql() && QFileInfo(path).canonicalFilePath() == QFileInfo(m_path).canonicalFilePath()) {
         emit importPreviewReady({{QStringLiteral("ok"), false},
                                  {QStringLiteral("error"), QStringLiteral("Dette er hvelvet som allerede er åpent.")}});
         return;
@@ -151,7 +152,7 @@ void VaultController::exportVault(const QUrl &target, const QString &password)
     QString path = localPath(target);
     if (!path.endsWith(QLatin1String(".hvelv"), Qt::CaseInsensitive))
         path += QStringLiteral(".hvelv");
-    if (QFileInfo(path).canonicalFilePath() == QFileInfo(m_path).canonicalFilePath()) {
+    if (!vaultIsSql() && QFileInfo(path).canonicalFilePath() == QFileInfo(m_path).canonicalFilePath()) {
         emit exportFinished(false, QStringLiteral("Velg en annen fil enn hvelvet som er åpent."));
         return;
     }
@@ -176,6 +177,50 @@ void VaultController::exportVault(const QUrl &target, const QString &password)
         f.close();
         QFile::remove(path + QStringLiteral(".bak"));
         return status;
+    }));
+}
+
+void VaultController::exportToSql(const QString &server, const QString &database, const QString &password)
+{
+    if (!isUnlocked() || m_busy)
+        return;
+    const SqlLocation loc{server.trimmed(), database.trimmed()};
+    if (loc.server.isEmpty() || !SqlLocation::isValidDatabaseName(loc.database)) {
+        emit exportFinished(false, QStringLiteral("Oppgi server og et gyldig databasenavn (bokstaver, tall, _ og -)."));
+        return;
+    }
+    if (loc.toString().compare(m_path, Qt::CaseInsensitive) == 0) {
+        emit exportFinished(false, QStringLiteral("Velg en annen database enn den som er åpen."));
+        return;
+    }
+    setBusy(true);
+    const QByteArray pw = password.toUtf8();
+    ChangeSet everything;
+    everything.upsertContacts = data().contacts;
+    everything.upsertEntries = data().entries;
+    everything.settings = data().settings;
+    const qsizetype count = everything.upsertEntries.size();
+
+    auto *watcher = new QFutureWatcher<VaultStore::Result>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, loc, count] {
+        const VaultStore::Result r = watcher->result();
+        watcher->deleteLater();
+        setBusy(false);
+        if (r.ok())
+            emit exportFinished(true, QStringLiteral("Kopierte %1 oppføringer til %2 på %3. "
+                                                     "Åpne den med «SQL Server…» når hvelvet er låst.")
+                                          .arg(count).arg(loc.database, loc.server));
+        else
+            emit exportFinished(false, r.message);
+    });
+    watcher->setFuture(QtConcurrent::run([loc, pw, everything] {
+        auto created = SqlStore::create(loc, pw);
+        if (!created.result.ok())
+            return created.result;
+        VaultStore::Result r = created.store->apply(everything);
+        if (!r.ok())
+            r.message = QStringLiteral("Databasen ble opprettet, men kopieringen feilet: %1").arg(r.message);
+        return r;
     }));
 }
 
