@@ -1,7 +1,7 @@
 #pragma once
 
 #include "importexport.h"
-#include "vaultfile.h"
+#include "vaultstore.h"
 
 #include <QFutureWatcher>
 #include <QObject>
@@ -11,6 +11,8 @@
 #include <QUrl>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
+
+#include <memory>
 
 class EntryModel;
 class EntryFilterModel;
@@ -63,11 +65,11 @@ public:
 
     QString vaultPath() const { return m_path; }
     bool vaultExists() const;
-    bool isUnlocked() const { return m_file.isOpen(); }
+    bool isUnlocked() const { return m_store != nullptr; }
     bool isBusy() const { return m_busy; }
     QString errorMessage() const { return m_error; }
     EntryFilterModel *entries() const { return m_filter; }
-    int totalCount() const { return int(m_data.entries.size()); }
+    int totalCount() const { return int(data().entries.size()); }
     int expiringCount() const { return m_expiring; }
     int expiredCount() const { return m_expired; }
     int autoLockMinutes() const;
@@ -192,9 +194,10 @@ private:
     void setBusy(bool busy);
     void setError(const QString &message);
     void setPath(const QString &path, bool remember = true);
-    bool persist();
+    // Lagrer endringene i hvelvet som er åpent. Setter feilmelding og returnerer false ved feil.
+    bool commit(const hvelv::ChangeSet &changes);
+    const hvelv::VaultData &data() const; // tomt når hvelvet er låst
     void afterDataChange();            // oppdaterer modell-kontakter, tellere og signaler
-    hvelv::Entry *mutableEntry(const QString &id);
     NetworkChecks *net();
     void initAutoType();
     void applyHotkeys();
@@ -205,8 +208,7 @@ private:
     QSettings m_settings;
     QString m_path;
     bool m_sessionOnlyPath = false;
-    hvelv::VaultFile m_file;
-    hvelv::VaultData m_data;
+    std::shared_ptr<hvelv::VaultStore> m_store; // null = låst
     EntryModel *m_model;
     EntryFilterModel *m_filter;
     bool m_busy = false;

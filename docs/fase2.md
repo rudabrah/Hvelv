@@ -1,6 +1,6 @@
 # Fase 2 – personlig og felles database i SQL Server
 
-Status: **plan, ikke påbegynt.** Sist oppdatert 2026-10-04.
+Status: **2a ferdig**, neste er 2b. Sist oppdatert 2026-10-05.
 
 ## Krav
 
@@ -123,7 +123,7 @@ Leveres som SQL-skript til drift.
 
 | Steg | Innhold | Ferdig når |
 |---|---|---|
-| **2a** | `VaultStore`-abstraksjon; dagens filhvelv blir `FileStore`. | Ingen synlig endring, alle tester grønne. |
+| **2a** ✅ | `VaultStore`-abstraksjon (`src/core/vaultstore.h`); dagens filhvelv blir `FileStore`. Kontrolleren lagrer via `ChangeSet` (alt eller ingenting). | Ingen synlig endring, alle tester grønne. |
 | **2b** | Skjema + prosedyrer (SQL-skript med versjonering), `SqlStore`, personlig database i SQL Server, migrering fra `.hvelv`. | Kan opprette, låse opp og bruke personlig database i SQL Server; tester mot lokal instans. |
 | **2c** | Flere tilkoblinger: innstillinger, sidepanel, søk på tvers, «Lagre i …», flytt/kopier. | Personlig fil/SQL og en annen database åpne samtidig. |
 | **2d** | Felles database: registrering, godkjenning med fingeravtrykk, nøkkelinnpakning, `hvelv_user`-rollen, revisjonslogg, konflikthåndtering, synk. | To testbrukere deler oppføringer; konflikt og tukling oppdages. |

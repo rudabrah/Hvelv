@@ -4,6 +4,7 @@
 
 #include "calendar.h"
 #include "entrymodel.h"
+#include "vaultfile.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -97,19 +98,21 @@ QVariantMap VaultController::commitImport(bool skipDuplicates, const QString &cu
 {
     if (!isUnlocked() || !m_pendingImport.ok)
         return {{QStringLiteral("ok"), false}};
-    const VaultData before = m_data;
     importexport::MergeOptions options;
     options.skipDuplicates = skipDuplicates;
     options.customer = customer;
     options.tag = tag;
-    const auto stats = importexport::merge(m_data, m_pendingImport, options);
-    if (!persist()) {
-        m_data = before;
+    // merge() legger bare til, så det nye er det som kommer etter det som fantes fra før.
+    VaultData merged = data();
+    const auto stats = importexport::merge(merged, m_pendingImport, options);
+    ChangeSet changes;
+    changes.upsertEntries = merged.entries.mid(data().entries.size());
+    changes.upsertContacts = merged.contacts.mid(data().contacts.size());
+    if (!commit(changes))
         return {{QStringLiteral("ok"), false}};
-    }
     m_pendingImport = {};
-    m_model->setContacts(m_data.contacts);
-    m_model->setEntries(m_data.entries);
+    m_model->setContacts(data().contacts);
+    m_model->setEntries(data().entries);
     afterDataChange();
     emit toast(stats.skipped > 0
                    ? QStringLiteral("Importerte %1 oppføringer (%2 duplikater hoppet over).").arg(stats.added).arg(stats.skipped)
@@ -130,14 +133,14 @@ bool VaultController::exportCsv(const QUrl &target)
     if (!isUnlocked())
         return false;
     QSaveFile out(localPath(target));
-    QByteArray csv = importexport::exportCsv(m_data);
+    QByteArray csv = importexport::exportCsv(data());
     const bool ok = out.open(QIODevice::WriteOnly) && out.write(csv) == csv.size() && out.commit();
     csv.fill('\0');
     if (!ok) {
         setError(QStringLiteral("Kunne ikke skrive filen: %1").arg(out.errorString()));
         return false;
     }
-    emit toast(QStringLiteral("Eksporterte %1 oppføringer til CSV (ukryptert!).").arg(m_data.entries.size()));
+    emit toast(QStringLiteral("Eksporterte %1 oppføringer til CSV (ukryptert!).").arg(data().entries.size()));
     return true;
 }
 
@@ -154,7 +157,7 @@ void VaultController::exportVault(const QUrl &target, const QString &password)
     }
     setBusy(true);
     const QByteArray pw = password.toUtf8();
-    const VaultData data = m_data;
+    const VaultData snapshot = data();
     auto *watcher = new QFutureWatcher<VaultFile::Status>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, path] {
         const auto status = watcher->result();
@@ -165,11 +168,11 @@ void VaultController::exportVault(const QUrl &target, const QString &password)
         else
             emit exportFinished(false, VaultFile::statusText(status));
     });
-    watcher->setFuture(QtConcurrent::run([path, pw, data] {
+    watcher->setFuture(QtConcurrent::run([path, pw, snapshot] {
         // Fjern en eventuell gammel fil først, så .bak-logikken ikke tar vare på et annet hvelv.
         QFile::remove(path);
         VaultFile f = VaultFile::create(path, pw);
-        const auto status = f.save(data);
+        const auto status = f.save(snapshot);
         f.close();
         QFile::remove(path + QStringLiteral(".bak"));
         return status;
@@ -180,7 +183,7 @@ bool VaultController::exportCalendar(const QUrl &target, bool includeExpired)
 {
     if (!isUnlocked())
         return false;
-    const QByteArray ics = calendar::buildIcs(m_data, {}, includeExpired);
+    const QByteArray ics = calendar::buildIcs(data(), {}, includeExpired);
     QSaveFile out(localPath(target));
     if (!out.open(QIODevice::WriteOnly) || out.write(ics) != ics.size() || !out.commit()) {
         setError(QStringLiteral("Kunne ikke skrive filen: %1").arg(out.errorString()));
@@ -192,14 +195,14 @@ bool VaultController::exportCalendar(const QUrl &target, bool includeExpired)
 
 bool VaultController::openInCalendar(const QString &entryId)
 {
-    const Entry *e = m_data.entry(entryId);
+    const Entry *e = data().entry(entryId);
     if (!e || !e->expiresAt.isValid())
         return false;
     // Midlertidig fil uten hemmeligheter; Outlook åpner den som en avtale som kan lagres.
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     const QString path = QDir(dir).filePath(QStringLiteral("hvelv-%1.ics").arg(e->id.left(8)));
     QSaveFile out(path);
-    const QByteArray ics = calendar::buildIcs(m_data, {entryId}, true);
+    const QByteArray ics = calendar::buildIcs(data(), {entryId}, true);
     if (!out.open(QIODevice::WriteOnly) || out.write(ics) != ics.size() || !out.commit())
         return false;
     return QDesktopServices::openUrl(QUrl::fromLocalFile(path));

@@ -131,7 +131,7 @@ void VaultController::requestAutoType()
 
     int best = 0;
     QStringList bestIds;
-    for (const auto &e : std::as_const(m_data.entries)) {
+    for (const auto &e : std::as_const(data().entries)) {
         const int score = autotype::matchScore(e, target.title);
         if (score <= 0)
             continue;
@@ -154,27 +154,26 @@ void VaultController::requestAutoType()
 
 bool VaultController::autoType(const QString &entryId, bool rememberWindow)
 {
-    Entry *e = mutableEntry(entryId);
-    if (!e)
+    const Entry *current = data().entry(entryId);
+    if (!current)
         return false;
+    const Entry e = *current;
     if (m_autoTypeTarget == 0) {
         emit toast(QStringLiteral("Ingen målvindu. Trykk %1 mens du står i påloggingsvinduet.").arg(hotkeyAutoType()));
         return false;
     }
-    if (rememberWindow && !m_autoTypeTitle.isEmpty() && autotype::matchScore(*e, m_autoTypeTitle) == 0) {
-        const Entry previous = *e;
-        e->customFields << CustomField{QString::fromLatin1(autotype::WindowFieldName), m_autoTypeTitle, false};
-        e->updatedAt = QDateTime::currentDateTimeUtc();
-        if (persist())
-            m_model->upsert(*e);
-        else
-            *e = previous;
+    if (rememberWindow && !m_autoTypeTitle.isEmpty() && autotype::matchScore(e, m_autoTypeTitle) == 0) {
+        Entry updated = e;
+        updated.customFields << CustomField{QString::fromLatin1(autotype::WindowFieldName), m_autoTypeTitle, false};
+        updated.updatedAt = QDateTime::currentDateTimeUtc();
+        if (commit({.upsertEntries = {updated}}))
+            m_model->upsert(updated);
     }
 
     QString code;
-    if (const auto cfg = totp::parse(e->totpSecret))
+    if (const auto cfg = totp::parse(e.totpSecret))
         code = totp::code(*cfg, QDateTime::currentSecsSinceEpoch());
-    const auto parsed = autotype::parseSequence(autotype::sequenceFor(*e, autoTypeSequence()), *e, code);
+    const auto parsed = autotype::parseSequence(autotype::sequenceFor(e, autoTypeSequence()), e, code);
     if (!parsed.error.isEmpty()) {
         emit toast(parsed.error);
         return false;

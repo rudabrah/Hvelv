@@ -57,19 +57,19 @@ QVariantMap contactToMap(const Contact &c, int usage)
 
 QVariantList VaultController::contacts() const
 {
-    QList<Contact> sorted = m_data.contacts;
+    QList<Contact> sorted = data().contacts;
     std::sort(sorted.begin(), sorted.end(), [](const Contact &a, const Contact &b) {
         return QString::localeAwareCompare(a.name, b.name) < 0;
     });
     QVariantList out;
     for (const auto &c : sorted)
-        out << contactToMap(c, m_data.contactUsage(c.id));
+        out << contactToMap(c, data().contactUsage(c.id));
     return out;
 }
 
-QStringList VaultController::customers() const { return distinctSorted(m_data.entries, &Entry::customer); }
-QStringList VaultController::systems() const { return distinctSorted(m_data.entries, &Entry::system); }
-QStringList VaultController::owners() const { return distinctSorted(m_data.entries, &Entry::owner); }
+QStringList VaultController::customers() const { return distinctSorted(data().entries, &Entry::customer); }
+QStringList VaultController::systems() const { return distinctSorted(data().entries, &Entry::system); }
+QStringList VaultController::owners() const { return distinctSorted(data().entries, &Entry::owner); }
 QVariantList VaultController::entryTypes() const { return entrytypes::types().toVariantList(); }
 QVariantList VaultController::templates() const { return entrytypes::templates().toVariantList(); }
 
@@ -79,14 +79,6 @@ QVariantMap VaultController::entryType(const QString &key) const
 }
 
 // --- Oppføringer ---
-
-Entry *VaultController::mutableEntry(const QString &id)
-{
-    for (auto &e : m_data.entries)
-        if (e.id == id)
-            return &e;
-    return nullptr;
-}
 
 QVariantMap VaultController::newEntry(int templateIndex) const
 {
@@ -110,7 +102,7 @@ QVariantMap VaultController::newEntry(int templateIndex) const
 
 QVariantMap VaultController::entry(const QString &id) const
 {
-    const Entry *e = m_data.entry(id);
+    const Entry *e = data().entry(id);
     if (!e)
         return {};
     QVariantMap m = e->toJson(false).toVariantMap(); // vedleggsdata holdes i C++
@@ -119,8 +111,8 @@ QVariantMap VaultController::entry(const QString &id) const
     m[QStringLiteral("expiryStatus")] = expiryStatusString(e->expiryStatus());
     QVariantList contacts;
     for (const auto &cid : e->contactIds)
-        if (const Contact *c = m_data.contact(cid))
-            contacts << contactToMap(*c, m_data.contactUsage(c->id));
+        if (const Contact *c = data().contact(cid))
+            contacts << contactToMap(*c, data().contactUsage(c->id));
     m[QStringLiteral("contacts")] = contacts;
     m[QStringLiteral("typeLabel")] = entrytypes::type(e->type)[QStringLiteral("label")].toString();
     return m;
@@ -160,30 +152,25 @@ QString VaultController::saveEntry(const QVariantMap &map)
     e.customFields.removeIf([](const CustomField &f) { return f.name.trimmed().isEmpty() && f.value.isEmpty(); });
     for (auto &f : e.customFields)
         f.name = f.name.trimmed();
-    e.contactIds.removeIf([this](const QString &cid) { return !m_data.contact(cid); });
+    e.contactIds.removeIf([this](const QString &cid) { return !data().contact(cid); });
     e.contactIds.removeDuplicates();
 
-    const QList<Entry> before = m_data.entries;
     const QDateTime now = QDateTime::currentDateTimeUtc();
-    if (Entry *existing = mutableEntry(e.id)) {
+    if (const Entry *existing = data().entry(e.id)) {
         e.attachments = existing->attachments; // endres bare via add/removeAttachment
         e.recordPasswordChange(*existing, now);
         e.createdAt = existing->createdAt;
         e.updatedAt = now;
-        *existing = e;
     } else {
         e.attachments.clear();
         e.passwordHistory.clear();
         e.passwordChangedAt = e.password.isEmpty() ? QDateTime() : now;
         e.createdAt = now;
         e.updatedAt = now;
-        m_data.entries.append(e);
     }
 
-    if (!persist()) {
-        m_data.entries = before;
+    if (!commit({.upsertEntries = {e}}))
         return {};
-    }
     clearError();
     m_model->upsert(e);
     afterDataChange();
@@ -194,13 +181,8 @@ bool VaultController::deleteEntry(const QString &id)
 {
     if (!isUnlocked())
         return false;
-    const QList<Entry> before = m_data.entries;
-    if (m_data.entries.removeIf([&](const Entry &e) { return e.id == id; }) == 0)
+    if (!data().entry(id) || !commit({.deleteEntryIds = {id}}))
         return false;
-    if (!persist()) {
-        m_data.entries = before;
-        return false;
-    }
     m_model->remove(id);
     afterDataChange();
     emit toast(QStringLiteral("Oppføringen er slettet."));
@@ -218,8 +200,8 @@ void VaultController::afterDataChange()
 
 QVariantMap VaultController::contact(const QString &id) const
 {
-    const Contact *c = m_data.contact(id);
-    return c ? contactToMap(*c, m_data.contactUsage(id)) : QVariantMap{};
+    const Contact *c = data().contact(id);
+    return c ? contactToMap(*c, data().contactUsage(id)) : QVariantMap{};
 }
 
 QString VaultController::saveContact(const QVariantMap &map)
@@ -236,22 +218,10 @@ QString VaultController::saveContact(const QVariantMap &map)
         return {};
     }
 
-    const QList<Contact> before = m_data.contacts;
-    bool replaced = false;
-    for (auto &existing : m_data.contacts) {
-        if (existing.id == c.id) {
-            existing = c;
-            replaced = true;
-        }
-    }
-    if (!replaced)
-        m_data.contacts << c;
-    if (!persist()) {
-        m_data.contacts = before;
+    if (!commit({.upsertContacts = {c}}))
         return {};
-    }
     clearError();
-    m_model->setContacts(m_data.contacts);
+    m_model->setContacts(data().contacts);
     afterDataChange();
     return c.id;
 }
@@ -260,17 +230,11 @@ bool VaultController::deleteContact(const QString &id)
 {
     if (!isUnlocked())
         return false;
-    const VaultData before = m_data;
-    if (m_data.contacts.removeIf([&](const Contact &c) { return c.id == id; }) == 0)
+    // Lagringen fjerner også kontakten fra oppføringene som bruker den.
+    if (!data().contact(id) || !commit({.deleteContactIds = {id}}))
         return false;
-    for (auto &e : m_data.entries)
-        e.contactIds.removeAll(id);
-    if (!persist()) {
-        m_data = before;
-        return false;
-    }
-    m_model->setContacts(m_data.contacts);
-    m_model->setEntries(m_data.entries);
+    m_model->setContacts(data().contacts);
+    m_model->setEntries(data().entries);
     afterDataChange();
     emit toast(QStringLiteral("Kontakten er slettet."));
     return true;
@@ -280,8 +244,8 @@ bool VaultController::deleteContact(const QString &id)
 
 bool VaultController::addAttachment(const QString &entryId, const QUrl &file)
 {
-    Entry *e = mutableEntry(entryId);
-    if (!e)
+    const Entry *current = data().entry(entryId);
+    if (!current)
         return false;
     QFile f(localPath(file));
     if (!f.open(QIODevice::ReadOnly)) {
@@ -299,15 +263,13 @@ bool VaultController::addAttachment(const QString &entryId, const QUrl &file)
     a.data = f.readAll();
     a.addedAt = QDateTime::currentDateTimeUtc();
 
-    const Entry previous = *e;
-    e->attachments << a;
-    e->updatedAt = a.addedAt;
-    if (!persist()) {
-        *e = previous;
+    Entry e = *current;
+    e.attachments << a;
+    e.updatedAt = a.addedAt;
+    if (!commit({.upsertEntries = {e}}))
         return false;
-    }
     clearError();
-    m_model->upsert(*e);
+    m_model->upsert(e);
     emit entryChanged(entryId);
     emit toast(QStringLiteral("«%1» er lagt til.").arg(a.name));
     return true;
@@ -315,7 +277,7 @@ bool VaultController::addAttachment(const QString &entryId, const QUrl &file)
 
 bool VaultController::saveAttachment(const QString &entryId, const QString &attachmentId, const QUrl &target)
 {
-    const Entry *e = m_data.entry(entryId);
+    const Entry *e = data().entry(entryId);
     if (!e)
         return false;
     for (const auto &a : e->attachments) {
@@ -334,18 +296,16 @@ bool VaultController::saveAttachment(const QString &entryId, const QString &atta
 
 bool VaultController::removeAttachment(const QString &entryId, const QString &attachmentId)
 {
-    Entry *e = mutableEntry(entryId);
-    if (!e)
+    const Entry *current = data().entry(entryId);
+    if (!current)
         return false;
-    const Entry previous = *e;
-    if (e->attachments.removeIf([&](const Attachment &a) { return a.id == attachmentId; }) == 0)
+    Entry e = *current;
+    if (e.attachments.removeIf([&](const Attachment &a) { return a.id == attachmentId; }) == 0)
         return false;
-    e->updatedAt = QDateTime::currentDateTimeUtc();
-    if (!persist()) {
-        *e = previous;
+    e.updatedAt = QDateTime::currentDateTimeUtc();
+    if (!commit({.upsertEntries = {e}}))
         return false;
-    }
-    m_model->upsert(*e);
+    m_model->upsert(e);
     emit entryChanged(entryId);
     return true;
 }

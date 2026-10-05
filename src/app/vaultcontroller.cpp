@@ -3,6 +3,7 @@
 #include "entryfiltermodel.h"
 #include "entrymodel.h"
 #include "entrytypes.h"
+#include "filestore.h"
 #include "passwordgenerator.h"
 #include "totp.h"
 
@@ -94,7 +95,7 @@ VaultController::~VaultController()
 {
     if (!m_lastClipboard.isEmpty() && QGuiApplication::clipboard()->text() == m_lastClipboard)
         QGuiApplication::clipboard()->clear();
-    m_file.close();
+    m_store.reset();
 }
 
 void VaultController::setTrayIcon(QSystemTrayIcon *tray)
@@ -200,18 +201,17 @@ void VaultController::createVault(const QString &masterPassword)
     setBusy(true);
 
     const QByteArray pw = masterPassword.toUtf8();
-    auto *watcher = new QFutureWatcher<std::pair<VaultFile, VaultFile::Status>>(this);
+    auto *watcher = new QFutureWatcher<FileStore::OpenResult>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, path] {
-        auto [file, status] = watcher->result();
+        FileStore::OpenResult r = watcher->result();
         watcher->deleteLater();
         setBusy(false);
-        if (status != VaultFile::Status::Ok) {
-            setError(VaultFile::statusText(status));
+        if (!r.result.ok()) {
+            setError(r.result.message);
             return;
         }
         setPath(path, !m_sessionOnlyPath);
-        m_file = file;
-        m_data = {};
+        m_store = std::move(r.store);
         m_model->setContacts({});
         m_model->setEntries({});
         recount();
@@ -221,11 +221,7 @@ void VaultController::createVault(const QString &masterPassword)
         emit dataChanged();
         emit toast(QStringLiteral("Nytt hvelv opprettet."));
     });
-    watcher->setFuture(QtConcurrent::run([path, pw] {
-        VaultFile f = VaultFile::create(path, pw);
-        const auto status = f.save({});
-        return std::make_pair(f, status);
-    }));
+    watcher->setFuture(QtConcurrent::run([path, pw] { return FileStore::create(path, pw); }));
 }
 
 void VaultController::unlock(const QString &masterPassword)
@@ -237,19 +233,18 @@ void VaultController::unlock(const QString &masterPassword)
 
     const QByteArray pw = masterPassword.toUtf8();
     const QString path = m_path;
-    auto *watcher = new QFutureWatcher<VaultFile::OpenResult>(this);
+    auto *watcher = new QFutureWatcher<FileStore::OpenResult>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
-        VaultFile::OpenResult r = watcher->result();
+        FileStore::OpenResult r = watcher->result();
         watcher->deleteLater();
         setBusy(false);
-        if (r.status != VaultFile::Status::Ok) {
-            setError(VaultFile::statusText(r.status));
+        if (!r.result.ok()) {
+            setError(r.result.message);
             return;
         }
-        m_file = r.file;
-        m_data = r.data;
-        m_model->setContacts(m_data.contacts);
-        m_model->setEntries(m_data.entries);
+        m_store = std::move(r.store);
+        m_model->setContacts(data().contacts);
+        m_model->setEntries(data().entries);
         recount();
         emit dataChanged();
         m_lastRefreshDate = QDate::currentDate();
@@ -258,15 +253,14 @@ void VaultController::unlock(const QString &masterPassword)
         emit unlockedChanged();
         checkReminders();
     });
-    watcher->setFuture(QtConcurrent::run([path, pw] { return VaultFile::open(path, pw); }));
+    watcher->setFuture(QtConcurrent::run([path, pw] { return FileStore::open(path, pw); }));
 }
 
 void VaultController::lock()
 {
     if (!isUnlocked())
         return;
-    m_file.close();
-    m_data = {};
+    m_store.reset();
     m_model->setEntries({});
     m_model->setContacts({});
     m_filter->setSearchText({});
@@ -296,51 +290,53 @@ void VaultController::changeMasterPassword(const QString &current, const QString
     setBusy(true);
     const QByteArray cur = current.toUtf8();
     const QByteArray nxt = next.toUtf8();
-    const QString path = m_path;
-    const VaultFile file = m_file;
-    const VaultData data = m_data;
+    // Kopien av pekeren holder hvelvet i live selv om det låses mens Argon2 kjører.
+    // commit() avviser endringer mens vi er opptatt, så ingen andre skriver samtidig.
+    const std::shared_ptr<VaultStore> store = m_store;
 
-    auto *watcher = new QFutureWatcher<std::pair<VaultFile, VaultFile::Status>>(this);
+    auto *watcher = new QFutureWatcher<VaultStore::Result>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
-        auto [file, status] = watcher->result();
+        const VaultStore::Result r = watcher->result();
         watcher->deleteLater();
         setBusy(false);
-        if (status != VaultFile::Status::Ok) {
-            setError(status == VaultFile::Status::WrongPassword
+        if (!r.ok()) {
+            setError(r.error == VaultStore::Error::WrongPassword
                          ? QStringLiteral("Nåværende hovedpassord er feil.")
-                         : VaultFile::statusText(status));
+                         : r.message);
             return;
         }
-        m_file = file;
         emit masterPasswordChanged();
         emit toast(QStringLiteral("Hovedpassordet er byttet."));
     });
-    watcher->setFuture(QtConcurrent::run([path, cur, nxt, file, data] {
-        // Verifiser nåværende passord mot filen på disk før vi bytter.
-        auto check = VaultFile::open(path, cur);
-        if (check.status != VaultFile::Status::Ok)
-            return std::make_pair(file, check.status);
-        VaultFile f = file;
-        const auto status = f.changePassword(nxt, data);
-        return std::make_pair(f, status);
-    }));
+    watcher->setFuture(QtConcurrent::run([store, cur, nxt] { return store->changePassword(cur, nxt); }));
 }
 
-bool VaultController::persist()
+bool VaultController::commit(const ChangeSet &changes)
 {
-    QString err;
-    const auto status = m_file.save(m_data, &err);
-    if (status != VaultFile::Status::Ok) {
-        setError(QStringLiteral("Kunne ikke lagre hvelvet: %1").arg(err.isEmpty() ? VaultFile::statusText(status) : err));
+    if (!m_store)
+        return false;
+    if (m_busy) {
+        setError(QStringLiteral("Vent til forrige operasjon er ferdig."));
+        return false;
+    }
+    const VaultStore::Result r = m_store->apply(changes);
+    if (!r.ok()) {
+        setError(QStringLiteral("Kunne ikke lagre hvelvet: %1").arg(r.message));
         return false;
     }
     return true;
 }
 
+const VaultData &VaultController::data() const
+{
+    static const VaultData empty;
+    return m_store ? m_store->data() : empty;
+}
+
 void VaultController::recount()
 {
     int soon = 0, expired = 0;
-    for (const auto &e : std::as_const(m_data.entries)) {
+    for (const auto &e : std::as_const(data().entries)) {
         switch (e.expiryStatus()) {
         case ExpiryStatus::ExpiringSoon: ++soon; break;
         case ExpiryStatus::Expired: ++expired; break;
@@ -370,7 +366,7 @@ void VaultController::checkReminders()
 {
     const QString today = QDate::currentDate().toString(Qt::ISODate);
     QStringList lines;
-    for (const auto &e : std::as_const(m_data.entries)) {
+    for (const auto &e : std::as_const(data().entries)) {
         const auto status = e.expiryStatus();
         if (status != ExpiryStatus::ExpiringSoon && status != ExpiryStatus::Expired)
             continue;
@@ -413,7 +409,7 @@ void VaultController::copyToClipboard(const QString &text, bool sensitive)
 
 void VaultController::copyField(const QString &id, const QString &field)
 {
-    const Entry *e = m_data.entry(id);
+    const Entry *e = data().entry(id);
     if (!e)
         return;
     if (field == QLatin1String("password"))
@@ -444,7 +440,7 @@ void VaultController::copyField(const QString &id, const QString &field)
 
 QVariantMap VaultController::totp(const QString &id) const
 {
-    const Entry *e = m_data.entry(id);
+    const Entry *e = data().entry(id);
     if (!e)
         return {{QStringLiteral("valid"), false}};
     const auto cfg = totp::parse(e->totpSecret);

@@ -3,11 +3,13 @@
 #include "crypto.h"
 #include "entry.h"
 #include "entrytypes.h"
+#include "filestore.h"
 #include "health.h"
 #include "passwordgenerator.h"
 #include "totp.h"
 #include "vaultfile.h"
 
+#include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTimeZone>
@@ -490,6 +492,87 @@ private slots:
         QCOMPARE(autotype::matchScore(rdp, "Windows-sikkerhet"), 100);
         QCOMPARE(autotype::matchScore(rdp, "Notisblokk"), 0);
         QCOMPARE(autotype::matchScore(visma, ""), 0);
+    }
+
+    void fileStoreRoundTrip()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("s.hvelv");
+        auto created = FileStore::create(path, "pw", FastKdf);
+        QVERIFY(created.result.ok());
+        QVERIFY(created.store->data().entries.isEmpty());
+        QCOMPARE(FileStore::create(path, "pw", FastKdf).result.error, VaultStore::Error::Io);
+
+        Contact c;
+        c.id = "c1";
+        c.name = "Kari";
+        Entry a = Entry::createNew();
+        a.title = "A";
+        a.contactIds = {"c1"};
+        Entry b = Entry::createNew();
+        b.title = "B";
+        b.contactIds = {"c1"};
+        QVERIFY(created.store->apply({.upsertEntries = {a, b}, .upsertContacts = {c}}).ok());
+        QCOMPARE(int(created.store->data().entries.size()), 2);
+
+        a.title = "A2";
+        QVERIFY(created.store->apply({.upsertEntries = {a}, .deleteEntryIds = {b.id}}).ok());
+        QVERIFY(created.store->apply({.deleteContactIds = {"c1"}}).ok());
+        QVERIFY(created.store->apply({}).ok());
+        created.store.reset();
+
+        auto opened = FileStore::open(path, "pw");
+        QVERIFY(opened.result.ok());
+        QCOMPARE(opened.store->kind(), VaultStore::Kind::File);
+        QCOMPARE(opened.store->location(), path);
+        const VaultData &d = opened.store->data();
+        QCOMPARE(int(d.entries.size()), 1);
+        QCOMPARE(d.entries.first().title, QStringLiteral("A2"));
+        QVERIFY(d.entries.first().contactIds.isEmpty()); // kontakten ble fjernet fra oppføringen
+        QVERIFY(d.contacts.isEmpty());
+
+        const auto wrong = FileStore::open(path, "feil");
+        QCOMPARE(wrong.result.error, VaultStore::Error::WrongPassword);
+        QVERIFY(!wrong.store);
+        QVERIFY(!wrong.result.message.isEmpty());
+    }
+
+    void fileStoreKeepsDataWhenSaveFails()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("x.hvelv");
+        auto created = FileStore::create(path, "pw", FastKdf);
+        QVERIFY(created.result.ok());
+        // En mappe der filen skal ligge gjør lagringen umulig.
+        QVERIFY(QFile::remove(path));
+        QVERIFY(QDir().mkdir(path));
+
+        Entry e = Entry::createNew();
+        e.title = "X";
+        const auto r = created.store->apply({.upsertEntries = {e}});
+        QVERIFY(!r.ok());
+        QVERIFY(!r.message.isEmpty());
+        QVERIFY(created.store->data().entries.isEmpty()); // minnet er uendret
+    }
+
+    void fileStoreChangePassword()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("p.hvelv");
+        auto created = FileStore::create(path, "gammelt", FastKdf);
+        QVERIFY(created.result.ok());
+        Entry e = Entry::createNew();
+        e.title = "Beholdes";
+        QVERIFY(created.store->apply({.upsertEntries = {e}}).ok());
+
+        QCOMPARE(created.store->changePassword("feil", "nytt").error, VaultStore::Error::WrongPassword);
+        QVERIFY(created.store->changePassword("gammelt", "nytt").ok());
+        QVERIFY(created.store->apply({.upsertEntries = {Entry::createNew()}}).ok()); // lagring virker etterpå
+
+        QCOMPARE(FileStore::open(path, "gammelt").result.error, VaultStore::Error::WrongPassword);
+        auto reopened = FileStore::open(path, "nytt");
+        QVERIFY(reopened.result.ok());
+        QCOMPARE(int(reopened.store->data().entries.size()), 2);
     }
 
     void expiryStatus()

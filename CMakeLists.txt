@@ -24,6 +24,8 @@ add_library(hvelv_core STATIC
     src/core/health.h        src/core/health.cpp
     src/core/autotype.h      src/core/autotype.cpp
     src/core/vaultfile.h     src/core/vaultfile.cpp
+    src/core/vaultstore.h    src/core/vaultstore.cpp
+    src/core/filestore.h     src/core/filestore.cpp
     src/core/totp.h          src/core/totp.cpp
     src/core/passwordgenerator.h src/core/passwordgenerator.cpp
 )

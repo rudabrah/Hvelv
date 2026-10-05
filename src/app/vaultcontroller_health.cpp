@@ -25,7 +25,7 @@ NetworkChecks *VaultController::net()
             m_breachCounts = counts;
             m_breachesChecked = true;
             emit healthChanged();
-            const int n = health::analyze(m_data, QDate::currentDate(), 365, m_breachCounts).breached;
+            const int n = health::analyze(data(), QDate::currentDate(), 365, m_breachCounts).breached;
             emit breachCheckFinished(true, n == 0 ? QStringLiteral("Ingen av passordene er funnet i kjente datalekkasjer.")
                                                   : QStringLiteral("%1 oppføring(er) har passord som finnes i kjente datalekkasjer.").arg(n));
         });
@@ -41,10 +41,10 @@ bool VaultController::isNetworkBusy() const
 
 QVariantMap VaultController::healthReport() const
 {
-    const auto r = health::analyze(m_data, QDate::currentDate(), 365, m_breachCounts);
+    const auto r = health::analyze(data(), QDate::currentDate(), 365, m_breachCounts);
     QVariantList items;
     for (const auto &i : r.issues) {
-        const Entry *e = m_data.entry(i.entryId);
+        const Entry *e = data().entry(i.entryId);
         if (!e)
             continue;
         items << QVariantMap{
@@ -79,7 +79,7 @@ void VaultController::checkBreaches()
     if (!isUnlocked())
         return;
     QSet<QString> hashes;
-    for (const auto &e : std::as_const(m_data.entries))
+    for (const auto &e : std::as_const(data().entries))
         if (!e.password.isEmpty())
             hashes.insert(health::sha1Hex(e.password));
     net()->checkBreaches(hashes.values());
@@ -89,7 +89,7 @@ QStringList VaultController::tlsTargets() const
 {
     QSet<QString> seen;
     QStringList out;
-    for (const auto &e : m_data.entries) {
+    for (const auto &e : data().entries) {
         QString target = e.url.trimmed();
         if (target.isEmpty() && e.type == QLatin1String("certificate"))
             target = e.fields.value(QStringLiteral("host")).toString();
