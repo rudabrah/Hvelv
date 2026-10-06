@@ -146,10 +146,22 @@ Leveres som SQL-skript til drift.
    loggen bare at noen synket, ikke hva de så. **Anbefaling:** hente ved behov + URL i klartekst.
 2. **Hvem kan godkjenne nye brukere og bytte nøkkel?** Alle aktive brukere (enklest, i tråd med
    «alle ser alt») eller en egen admin-rolle.
+   *Foreløpig (2026-10-06):* admin oppretter påloggingen (se 3), men innpakningen av databasenøkkelen
+   må fortsatt gjøres av en eksisterende Hvelv-bruker etter sjekk av fingeravtrykket. Forslag: alle
+   aktive brukere kan godkjenne.
 3. **Pålogging til felles database:** Windows-autentisering eller SQL-pålogginger.
+   *Foreløpig (2026-10-06, må avklares med bedriften):* den samme brukeren som admin oppretter for
+   pålogging til serverne, brukes også mot felles database. Admin oppretter den og legger den i
+   `hvelv_user`; avgang = kontoen deaktiveres. Den personlige databasen oppretter brukeren selv.
+   Gjenstår: er det en domenekonto, og er det den samme kontoen man logger på PC-en med? Ja → Windows-
+   autentisering. Egen konto (f.eks. `adm-…`) eller SQL-pålogging → brukernavn/passord lagres
+   kryptert i den personlige databasen, som for andre tilkoblinger i 2c.
 4. **Driftssted og utgave** for felles database.
 5. **LocalDB for kolleger:** må installeres på hver maskin (gratis, `SqlLocalDB.msi`). Skal appen
    lede brukeren gjennom det, eller skal IT rulle det ut?
+   *Besvart (2026-10-06):* trengs ikke. Alle kolleger har SQL Server installert lokalt (samme
+   oppsett). Velkomstsiden ved første oppstart finner lokale instanser i registeret og oppretter
+   `HvelvPersonlig` der. Installeren tar bare med ODBC-driveren.
 
 ## Utviklingsmiljø (sjekket 2026-10-04)
 

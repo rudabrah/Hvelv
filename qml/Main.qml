@@ -18,13 +18,18 @@ ApplicationWindow {
     Loader {
         anchors.fill: parent
         focus: true
-        sourceComponent: Vault.unlocked ? vaultPage : unlockPage
+        sourceComponent: Vault.unlocked ? vaultPage : Vault.firstRun ? welcomePage : unlockPage
         // Passordfeltet deaktiveres under opplåsing og mister fokus; gi den nye siden fokus eksplisitt.
         onLoaded: (item as Item).forceActiveFocus()
     }
 
     QuickSearchWindow {
         id: quickSearch
+    }
+
+    Component {
+        id: welcomePage
+        WelcomePage { objectName: "welcomePage" }
     }
 
     Component {

@@ -17,6 +17,8 @@
 #include <QQuickWindow>
 #include <QSGRendererInterface>
 #include <QScopeGuard>
+#include <QSettings>
+#include <QStandardPaths>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -359,7 +361,7 @@ private slots:
         QVariantMap e = m_vault->entry(m_soonId);
         e["password"] = QStringLiteral("NyttPassord1");
         e["passwordHistory"] = QVariantList{}; // forsøk på å slette historikk ignoreres
-        QCOMPARE(m_vault->saveEntry(e), m_soonId);
+        QVERIFY2(m_vault->saveEntry(e) == m_soonId, qPrintable(m_vault->errorMessage()));
         const QVariantList history = m_vault->entry(m_soonId).value("passwordHistory").toList();
         QCOMPARE(history.size(), 1);
         QCOMPARE(history.first().toMap().value("password").toString(), QStringLiteral("S3cret!"));
@@ -432,7 +434,7 @@ private slots:
         QVERIFY(preview.value("ok").toBool());
         QCOMPARE(preview.value("count").toInt(), 2);
         const QVariantMap stats = m_vault->commitImport(true, QStringLiteral("Importkunde"), QStringLiteral("importtest"));
-        QVERIFY(stats.value("ok").toBool());
+        QVERIFY2(stats.value("ok").toBool(), qPrintable(m_vault->errorMessage()));
         QCOMPARE(stats.value("added").toInt(), 2);
         QCOMPARE(m_vault->totalCount(), before + 2);
         QVERIFY(m_vault->customers().contains(QStringLiteral("Importkunde")));
@@ -770,6 +772,54 @@ private slots:
         QCOMPARE(m_vault->entries()->count(), 0);
         QCOMPARE(m_vault->totalCount(), 0);
         QTRY_VERIFY(!findByName(m_window, "vaultPage"));
+    }
+
+    // Første oppstart i en egen motor (egen Vault-singleton) uten lagret hvelv.
+    void firstRunWelcome()
+    {
+        const QString defaultFile = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+                                    + QStringLiteral("/Hvelv/mitt-hvelv.hvelv");
+        if (QFileInfo::exists(defaultFile))
+            QSKIP("Standard hvelvfil finnes på denne maskinen, så det er ikke første oppstart.");
+        QSettings().remove(QStringLiteral("vaultPath"));
+
+        QQmlApplicationEngine engine;
+        auto *vault = engine.singletonInstance<VaultController *>("Hvelv", "Vault");
+        QVERIFY(vault);
+        QVERIFY(vault->isFirstRun());
+        engine.loadFromModule("Hvelv", "Main");
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QTRY_VERIFY(findByName(window, "welcomePage"));
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        if (const QString dir = qEnvironmentVariable("HVELV_UI_SNAPSHOTS"); !dir.isEmpty()) {
+            QTest::qWait(300);
+            QVERIFY(window->grabWindow().save(QDir(dir).filePath(QStringLiteral("ui-30-welcome.png"))));
+        }
+
+        // SQL uten server avvises og blir på velkomstsiden.
+        vault->startSetup(QStringLiteral("sql"), QStringLiteral(" "));
+        QVERIFY(!vault->errorMessage().isEmpty());
+        QVERIFY(vault->isFirstRun());
+
+        // Valget gir opprettelsessiden, men lagres ikke før hvelvet faktisk er opprettet.
+        vault->startSetup(QStringLiteral("sql"), QStringLiteral("localhost\\SQLEXPRESS"));
+        QVERIFY(!vault->isFirstRun());
+        QVERIFY(vault->isSetupActive());
+        QVERIFY(vault->vaultIsSql());
+        QVERIFY(!vault->vaultExists());
+        QTRY_VERIFY(!findByName(window, "welcomePage"));
+        QVERIFY(!QSettings().contains(QStringLiteral("vaultPath")));
+
+        // Tilbake til velkomstsiden.
+        vault->restartSetup();
+        QVERIFY(vault->isFirstRun());
+        QTRY_VERIFY(findByName(window, "welcomePage"));
+
+        vault->startSetup(QStringLiteral("file"));
+        QVERIFY(!vault->vaultIsSql());
+        QCOMPARE(QFileInfo(vault->vaultPath()).fileName(), QStringLiteral("mitt-hvelv.hvelv"));
+        QVERIFY(!QSettings().contains(QStringLiteral("vaultPath")));
     }
 
     void cleanupTestCase()

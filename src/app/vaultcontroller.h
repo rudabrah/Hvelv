@@ -33,6 +33,12 @@ class VaultController : public QObject
     Q_PROPERTY(QString vaultPath READ vaultPath NOTIFY vaultPathChanged)
     Q_PROPERTY(bool vaultExists READ vaultExists NOTIFY vaultPathChanged)
     Q_PROPERTY(bool vaultIsSql READ vaultIsSql NOTIFY vaultPathChanged)
+    // Første oppstart: ingen hvelv valgt ennå, så velkomstsiden vises.
+    Q_PROPERTY(bool firstRun READ isFirstRun NOTIFY vaultPathChanged)
+    // Brukeren har valgt i velkomstsiden, men ikke opprettet hvelvet ennå (kan gå tilbake).
+    Q_PROPERTY(bool setupActive READ isSetupActive NOTIFY vaultPathChanged)
+    // SQL Server-instanser på denne PC-en, som servernavn ("localhost", "localhost\\SQLEXPRESS").
+    Q_PROPERTY(QStringList localSqlServers READ localSqlServers CONSTANT)
     Q_PROPERTY(QString vaultDisplayName READ vaultDisplayName NOTIFY vaultPathChanged)
     Q_PROPERTY(bool unlocked READ isUnlocked NOTIFY unlockedChanged)
     // Åpne databaser: [{key, name, location, displayLocation, isMain, isSql, open, opening, error, count}]
@@ -74,6 +80,9 @@ public:
     QString vaultPath() const { return m_path; }
     bool vaultExists() const;
     bool vaultIsSql() const;
+    bool isFirstRun() const;
+    bool isSetupActive() const;
+    QStringList localSqlServers() const;
     QString vaultDisplayName() const;
     bool isUnlocked() const { return !m_sources.isEmpty() && m_sources.first().store; }
     QVariantList sources() const;
@@ -116,6 +125,10 @@ public:
     Q_INVOKABLE void lock();
     Q_INVOKABLE void changeMasterPassword(const QString &current, const QString &next);
     Q_INVOKABLE QUrl defaultVaultUrl() const;
+    // Velkomstsiden: "sql" (ny database HvelvPersonlig på server) eller "file" (standard hvelvfil).
+    // Valget lagres først når hvelvet er opprettet.
+    Q_INVOKABLE void startSetup(const QString &kind, const QString &server = {});
+    Q_INVOKABLE void restartSetup();
 
     // Oppføringer
     // sourceKey: databasen oppføringen skal lagres i (tom = hoveddatabasen)
@@ -218,6 +231,7 @@ signals:
     void quickSearchRequested(const QString &windowTitle, bool forAutoType);
     void qrScanned(const QVariantMap &result);
     void toast(const QString &message);
+    void setupFinished(); // første hvelv er opprettet fra velkomstsiden
     void showAttentionRequested(); // fra varsel i systemkurven
 
 protected:
@@ -269,6 +283,7 @@ private:
     QString m_path;
     bool m_sessionOnlyPath = false;
     bool m_sqlCreate = false; // valgt SQL-database skal opprettes, ikke åpnes
+    bool m_setupActive = false;
     QList<Source> m_sources;  // tom = låst
     hvelv::VaultData m_merged;
     int m_generation = 0;     // økes ved låsing, så svar fra bakgrunnsåpning kan forkastes

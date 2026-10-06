@@ -47,7 +47,9 @@ SQL Server. Felles database for hele teamet kommer senere i fase 2 ([plan](docs/
 
 ## Bygg
 
-Krever Visual Studio 2022 og Qt 6.8.1 (`msvc2022_64`) i `C:\Qt`.
+Krever Qt 6.8 eller nyere i `C:\Qt`: enten Qt 6.8.1 `msvc2022_64` med Visual Studio 2022, eller
+Qt 6.10.2 `mingw_64` med MinGW fra Qt-installasjonen. `build.bat` velger MSVC hvis det finnes, ellers
+MinGW; `HVELV_QT` overstyrer Qt-mappen.
 
 ```bat
 build.bat            :: Release: bygger og kjører alle tester
@@ -55,6 +57,23 @@ build.bat Debug
 ```
 
 `vcvars64` fungerer bare inne i en `.bat`-fil, så bygg alltid via `build.bat`.
+
+### Installasjonsprogram
+
+```bat
+powershell -ExecutionPolicy Bypass -File installer\fetch_redist.ps1   :: én gang: henter ODBC-driveren
+build.bat
+installer\make_installer.bat                                          :: krever Inno Setup 6
+```
+
+Resultatet er `installer\output\Hvelv-Setup-<versjon>.exe`. Den installerer Hvelv i Program Files,
+legger inn «ODBC Driver 18 for SQL Server» hvis verken 17 eller 18 finnes, og kan lage snarvei og
+autostart. SQL Server installeres ikke; den personlige databasen legges på en instans som allerede
+finnes på PC-en. Stille installasjon: `Hvelv-Setup-<versjon>.exe /VERYSILENT /NORESTART`.
+
+Ved første oppstart viser appen en velkomstside: personlig database i SQL Server på denne PC-en
+(instansene finnes automatisk) eller kryptert fil. Etter at hovedpassordet er valgt, tilbys
+«Databaser…» for å koble til flere databaser.
 
 Appen havner i `build\Release\app\Hvelv.exe`, ferdig klargjort med `windeployqt`, slik at mappen
 kan kopieres og kjøres på andre maskiner.
@@ -130,6 +149,7 @@ sql/          databaseskjema for SQL Server (bygges inn i appen)
 docs/         plan for fase 2
 tests/        tst_core, tst_import, tst_ui, tst_sql + testdata i tests/data
 third_party/  Monocypher 4.0.3, ZXing-cpp 3.1.1 (bare QR-leser)
+installer/    Inno Setup-skript for Hvelv-Setup.exe
 tools/        ikongenerator
 assets/       ikoner og Windows-ressursfil
 ```

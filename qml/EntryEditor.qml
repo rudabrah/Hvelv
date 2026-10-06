@@ -185,7 +185,7 @@ Item {
     onSourceChanged: load()
     Component.onCompleted: { Vault.clearError(); load() }
 
-    Shortcut { sequence: StandardKey.Save; enabled: root.visible; onActivated: root.save() }
+    Shortcut { sequences: [StandardKey.Save]; enabled: root.visible; onActivated: root.save() }
     Shortcut { sequence: "Esc"; enabled: root.visible; onActivated: root.cancelled() }
 
     ColumnLayout {

@@ -125,7 +125,18 @@ FocusScope {
             Layout.alignment: Qt.AlignHCenter
         }
 
+        Button {
+            visible: Vault.setupActive
+            text: "← Velg et annet sted"
+            flat: true
+            enabled: !Vault.busy
+            Layout.alignment: Qt.AlignHCenter
+            Layout.topMargin: 8
+            onClicked: Vault.restartSetup()
+        }
+
         RowLayout {
+            visible: !Vault.setupActive
             Layout.alignment: Qt.AlignHCenter
             Layout.topMargin: 8
             spacing: 4

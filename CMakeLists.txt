@@ -76,6 +76,7 @@ if(HVELV_BUILD_APP)
         QML_FILES
             qml/Main.qml
             qml/UnlockPage.qml
+            qml/WelcomePage.qml
             qml/VaultPage.qml
             qml/EntryDetails.qml
             qml/EntryEditor.qml
@@ -123,11 +124,17 @@ if(HVELV_BUILD_APP)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/app")
 
     # Kopier Qt-DLL-er, plugins og QML-moduler ved siden av exe-en, sÃ¥ den kan startes direkte.
+    # MSVC-runtime installeres av installeren (VC++ Redistributable); MinGW-runtime kopieres hit.
     if(WIN32)
+        if(MSVC)
+            set(HVELV_RUNTIME_ARG --no-compiler-runtime)
+        else()
+            set(HVELV_RUNTIME_ARG --compiler-runtime)
+        endif()
         add_custom_command(TARGET hvelv POST_BUILD
             COMMAND "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS}/windeployqt.exe"
                     --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/qml"
-                    --no-translations --no-compiler-runtime --no-system-d3d-compiler
+                    --no-translations ${HVELV_RUNTIME_ARG} --no-system-d3d-compiler
                     --exclude-plugins qsqlite,qsqlpsql,qsqlmimer
                     "$<TARGET_FILE:hvelv>"
             COMMENT "windeployqt: kopierer Qt-avhengigheter"

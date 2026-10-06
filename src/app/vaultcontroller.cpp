@@ -22,7 +22,9 @@
 #include <QSystemTrayIcon>
 #include <QtConcurrent>
 
+#include <algorithm>
 #include <climits>
+#include <utility>
 
 using namespace hvelv;
 
@@ -117,6 +119,60 @@ bool VaultController::vaultIsSql() const
     return SqlLocation::isSqlLocation(m_path);
 }
 
+bool VaultController::isFirstRun() const
+{
+    return !m_sessionOnlyPath && !m_setupActive && !isUnlocked()
+           && !m_settings.contains(QStringLiteral("vaultPath"))
+           && !QFileInfo::exists(localPath(defaultVaultUrl()));
+}
+
+bool VaultController::isSetupActive() const
+{
+    return m_setupActive;
+}
+
+QStringList VaultController::localSqlServers() const
+{
+    QStringList servers;
+#ifdef Q_OS_WIN
+    const QSettings instances(QStringLiteral("HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Microsoft SQL Server"
+                                             "\\Instance Names\\SQL"), QSettings::NativeFormat);
+    for (const QString &name : instances.childKeys())
+        servers << (name.compare(QLatin1String("MSSQLSERVER"), Qt::CaseInsensitive) == 0
+                        ? QStringLiteral("localhost") : QStringLiteral("localhost\\") + name);
+    // Standardinstansen først.
+    std::stable_partition(servers.begin(), servers.end(),
+                          [](const QString &s) { return s == QLatin1String("localhost"); });
+#endif
+    return servers;
+}
+
+void VaultController::startSetup(const QString &kind, const QString &server)
+{
+    clearError();
+    if (kind == QLatin1String("sql")) {
+        const SqlLocation loc{server.trimmed(), QStringLiteral("HvelvPersonlig")};
+        if (loc.server.isEmpty()) {
+            setError(QStringLiteral("Oppgi en SQL Server."));
+            return;
+        }
+        m_setupActive = true;
+        m_sqlCreate = true;
+        setPath(loc.toString(), false);
+    } else {
+        m_setupActive = true;
+        setPath(localPath(defaultVaultUrl()), false);
+    }
+}
+
+void VaultController::restartSetup()
+{
+    clearError();
+    m_setupActive = false;
+    m_sqlCreate = false;
+    emit vaultPathChanged();
+}
+
 QString VaultController::vaultDisplayName() const
 {
     return describeLocation(m_path);
@@ -199,6 +255,7 @@ void VaultController::selectVaultFile(const QUrl &url)
         lock();
     clearError();
     m_sessionOnlyPath = false;
+    m_setupActive = false;
     QString path = localPath(url);
     if (!QFileInfo::exists(path) && !path.endsWith(QLatin1String(".hvelv"), Qt::CaseInsensitive))
         path += QStringLiteral(".hvelv");
@@ -216,6 +273,7 @@ void VaultController::selectSqlDatabase(const QString &server, const QString &da
         lock();
     clearError();
     m_sessionOnlyPath = false;
+    m_setupActive = false;
     m_sqlCreate = create;
     setPath(loc.toString());
 }
@@ -257,6 +315,7 @@ void VaultController::createVault(const QString &masterPassword)
             return;
         }
         m_sqlCreate = false;
+        const bool fromSetup = std::exchange(m_setupActive, false);
         setPath(path, !m_sessionOnlyPath);
         startMain(std::move(r.store));
         m_idleTimer.start(autoLockMinutes() * 60 * 1000);
@@ -264,6 +323,8 @@ void VaultController::createVault(const QString &masterPassword)
         emit unlockedChanged();
         emit dataChanged();
         emit toast(QStringLiteral("Nytt hvelv opprettet."));
+        if (fromSetup)
+            emit setupFinished();
     });
     watcher->setFuture(QtConcurrent::run([path, pw] { return openStore(path, pw, true); }));
 }

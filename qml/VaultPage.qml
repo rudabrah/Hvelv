@@ -52,8 +52,8 @@ FocusScope {
             list.currentIndex = row
     }
 
-    Shortcut { sequence: StandardKey.Find; onActivated: search.forceActiveFocus() }
-    Shortcut { sequence: StandardKey.New; onActivated: templates.open() }
+    Shortcut { sequences: [StandardKey.Find]; onActivated: search.forceActiveFocus() }
+    Shortcut { sequences: [StandardKey.New]; onActivated: templates.open() }
     Shortcut { sequence: "Ctrl+L"; onActivated: Vault.lock() }
 
     Connections {
@@ -369,6 +369,30 @@ FocusScope {
         id: databases
         objectName: "databasesDialog"
         anchors.centerIn: parent
+    }
+
+    // Etter første oppstart: tilby å koble til flere databaser (f.eks. teamets felles database).
+    AppDialog {
+        id: moreDatabases
+        objectName: "moreDatabasesDialog"
+        title: "Hvelvet er klart"
+        modal: true
+        width: 440
+        anchors.centerIn: parent
+        standardButtons: Dialog.Yes | Dialog.No
+        onAccepted: databases.open()
+
+        Label {
+            anchors.fill: parent
+            wrapMode: Text.WordWrap
+            text: "Vil du koble til flere databaser nå, for eksempel en felles database for teamet eller "
+                  + "en eksisterende hvelvfil? Du kan også gjøre det senere fra menyen under «Databaser…»."
+        }
+
+        Connections {
+            target: Vault
+            function onSetupFinished() { moreDatabases.open() }
+        }
     }
 
     ExportDialog {

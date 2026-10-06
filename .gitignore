@@ -3,6 +3,10 @@ build/
 build-*/
 out/
 
+# Installer: nedlastede Microsoft-komponenter og ferdig setup.exe
+installer/redist/
+installer/output/
+
 # IDE-filer
 *.user
 *.user.*
